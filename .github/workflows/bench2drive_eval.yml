@@ -1,0 +1,150 @@
+name: Bench2Drive Code Check
+
+# NOTE: Bench2Drive closed-loop evaluation requires CARLA 0.9.15 running locally.
+# This workflow only checks code correctness (syntax, import structure).
+# For actual CARLA evaluation, follow docs/bench2drive_setup.md and run locally.
+
+on:
+  push:
+    branches:
+      - main
+      - 'claude/*'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  code-check:
+    name: Bench2Drive Code Correctness Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Remind user about CARLA requirement
+        run: |
+          echo "============================================================"
+          echo " NOTICE: Full Bench2Drive evaluation requires:"
+          echo "   - CARLA 0.9.15 installed locally"
+          echo "   - A GPU with >= 24 GB VRAM"
+          echo "   - carla Python package installed"
+          echo ""
+          echo " See docs/bench2drive_setup.md for instructions."
+          echo "============================================================"
+
+      - name: Syntax check all project Python files
+        run: |
+          python - <<'EOF'
+          import ast, glob
+
+          patterns = [
+              'nuScenes/**/*.py',
+              'vqa_evaluation/**/*.py',
+          ]
+          all_files = []
+          for pat in patterns:
+              all_files.extend(glob.glob(pat, recursive=True))
+
+          errors = []
+          for path in sorted(all_files):
+              try:
+                  with open(path) as f:
+                      ast.parse(f.read())
+              except SyntaxError as e:
+                  errors.append(f'{path}: {e}')
+
+          if errors:
+              print('Syntax errors found:')
+              for e in errors:
+                  print(f'  {e}')
+              raise SystemExit(1)
+          print(f'All {len(all_files)} Python files pass syntax check.')
+          EOF
+
+      - name: Validate YAML workflows
+        run: |
+          python - <<'EOF'
+          import glob
+
+          try:
+              import yaml
+          except ImportError:
+              import subprocess
+              subprocess.run(['pip', 'install', 'pyyaml', '-q'], check=True)
+              import yaml
+
+          workflow_files = glob.glob('.github/workflows/*.yml')
+          for path in workflow_files:
+              with open(path) as f:
+                  yaml.safe_load(f)
+              print(f'YAML OK: {path}')
+          EOF
+
+      - name: Check documentation exists
+        run: |
+          required_docs=(
+              "docs/installation.md"
+              "docs/data_preparation.md"
+              "docs/train_eval_nuscenes_mini.md"
+              "docs/bench2drive_setup.md"
+              "docs/evaluation_results.md"
+          )
+          all_ok=true
+          for doc in "${required_docs[@]}"; do
+              if [ -f "$doc" ]; then
+                  echo "OK: $doc"
+              else
+                  echo "MISSING: $doc"
+                  all_ok=false
+              fi
+          done
+          if [ "$all_ok" != "true" ]; then
+              exit 1
+          fi
+
+      - name: Verify nuScenes mini config parameters
+        run: |
+          python - <<'EOF'
+          # Parse stage1 config as Python dict (no mmcv needed)
+          import ast, re
+
+          with open('nuScenes/projects/configs/UniDriveVLA/unidrivevla_mini_stage1.py') as f:
+              src = f.read()
+
+          # Extract key assignments using ast
+          tree = ast.parse(src)
+          assignments = {}
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name):
+                          try:
+                              assignments[target.id] = ast.literal_eval(node.value)
+                          except Exception:
+                              pass
+
+          checks = {
+              'bev_h': (50, 'BEV height should be 50 for mini'),
+              'bev_w': (50, 'BEV width should be 50 for mini'),
+              'queue_length': (2, 'Queue length should be 2 for mini'),
+              'version': ('v1.0-mini', 'Version should be v1.0-mini'),
+              'total_epochs': (24, 'Stage 1 should train for 24 epochs'),
+          }
+
+          failed = []
+          for var, (expected, msg) in checks.items():
+              val = assignments.get(var)
+              if val != expected:
+                  failed.append(f'  FAIL: {var}={val!r} (expected {expected!r}) — {msg}')
+              else:
+                  print(f'  OK: {var} = {val!r}')
+
+          if failed:
+              for f in failed:
+                  print(f)
+              raise SystemExit(1)
+          print('All nuScenes mini config checks passed.')
+          EOF

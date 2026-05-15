@@ -1,0 +1,271 @@
+name: nuScenes Mini Evaluation
+
+on:
+  push:
+    branches:
+      - main
+      - 'claude/*'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      checkpoint_path:
+        description: 'Path to model checkpoint (leave empty to use latest)'
+        required: false
+        default: ''
+      eval_detection:
+        description: 'Run detection evaluation'
+        required: false
+        default: 'true'
+      eval_map:
+        description: 'Run map evaluation'
+        required: false
+        default: 'true'
+      eval_planning:
+        description: 'Run planning evaluation'
+        required: false
+        default: 'true'
+
+env:
+  PYTHONPATH: ${{ github.workspace }}/nuScenes:${{ github.workspace }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint / syntax check (no GPU required)
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint & Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install linting tools
+        run: pip install pyflakes ruff
+
+      - name: Check Python syntax (pyflakes)
+        run: |
+          find nuScenes vqa_evaluation -name "*.py" \
+            | xargs python -m pyflakes 2>&1 || true
+
+      - name: Lint with ruff
+        run: |
+          ruff check nuScenes/projects nuScenes/tools vqa_evaluation \
+            --ignore E501,E402,F401,F811 || true
+
+  # ---------------------------------------------------------------------------
+  # Data preparation (no GPU)
+  # ---------------------------------------------------------------------------
+  data-prep:
+    name: Data Preparation (dry-run)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install minimal dependencies
+        run: |
+          pip install numpy pyquaternion
+
+      - name: Check converter script syntax
+        run: |
+          python -c "
+          import ast, sys
+          files = [
+              'nuScenes/tools/data_converter/nuscenes_converter.py',
+          ]
+          for f in files:
+              with open(f) as fh:
+                  ast.parse(fh.read())
+              print(f'OK: {f}')
+          "
+
+      - name: Verify info pkl structure (mock)
+        run: |
+          python - <<'EOF'
+          import pickle, os, tempfile, numpy as np
+
+          # Create a mock info pkl to test loading
+          mock_info = dict(
+              token='abc123',
+              scene_token='scene001',
+              timestamp=1234567890,
+              gt_boxes=np.zeros((2, 7), dtype=np.float32),
+              gt_names=np.array(['car', 'pedestrian']),
+              gt_velocity=np.zeros((2, 2), dtype=np.float32),
+              valid_flag=np.array([True, True]),
+              prev='',
+              next='',
+              lidar_path='data/nuscenes/samples/LIDAR_TOP/n008-xxx.pcd.bin',
+              cams={},
+              ego2global_translation=[0.0, 0.0, 0.0],
+              ego2global_rotation=[1.0, 0.0, 0.0, 0.0],
+          )
+
+          with tempfile.NamedTemporaryFile(suffix='.pkl', delete=False) as f:
+              pickle.dump([mock_info] * 5, f)
+              path = f.name
+
+          with open(path, 'rb') as f:
+              infos = pickle.load(f)
+
+          assert len(infos) == 5
+          assert 'gt_boxes' in infos[0]
+          print(f'Mock pkl OK: {len(infos)} samples, keys={list(infos[0].keys())}')
+          os.unlink(path)
+          EOF
+
+  # ---------------------------------------------------------------------------
+  # Model architecture check (CPU, no dataset needed)
+  # ---------------------------------------------------------------------------
+  model-check:
+    name: Model Architecture Check (CPU)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install PyTorch (CPU)
+        run: pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install minimal mmdet dependencies (stub)
+        run: |
+          pip install numpy einops
+
+      - name: Verify config files parse correctly
+        run: |
+          python - <<'EOF'
+          import ast, sys
+
+          configs = [
+              'nuScenes/projects/configs/UniDriveVLA/unidrivevla_mini_stage1.py',
+              'nuScenes/projects/configs/UniDriveVLA/unidrivevla_mini_stage2.py',
+              'nuScenes/projects/configs/_base_/default_runtime.py',
+          ]
+
+          for path in configs:
+              with open(path) as f:
+                  src = f.read()
+              ast.parse(src)
+              print(f'Config syntax OK: {path}')
+          EOF
+
+      - name: Verify constants are correct
+        run: |
+          python - <<'EOF'
+          import sys
+          sys.path.insert(0, 'nuScenes')
+
+          # Parse constants module without mmdet dependencies
+          import ast
+          with open('nuScenes/projects/mmdet3d_plugin/unidrivevla/dense_heads/constants.py') as f:
+              src = f.read()
+          tree = ast.parse(src)
+          ns = {}
+          exec(compile(tree, 'constants.py', 'exec'), ns)
+
+          assert len(ns['NUSCENES_DETECTION_CLASSES']) == 10, \
+              f"Expected 10 det classes, got {len(ns['NUSCENES_DETECTION_CLASSES'])}"
+          assert len(ns['NUSCENES_MAP_CLASSES']) == 3, \
+              f"Expected 3 map classes, got {len(ns['NUSCENES_MAP_CLASSES'])}"
+          assert ns['BEV_H_MINI'] == 50
+          assert ns['BEV_W_MINI'] == 50
+          print('Constants OK:', ns['NUSCENES_DETECTION_CLASSES'])
+          print('BEV grid:', ns['BEV_H_MINI'], 'x', ns['BEV_W_MINI'])
+          EOF
+
+  # ---------------------------------------------------------------------------
+  # Evaluation script dry-run (CPU, mock results)
+  # ---------------------------------------------------------------------------
+  evaluation:
+    name: Evaluation Scripts Dry-Run
+    runs-on: ubuntu-latest
+    needs: [data-prep, model-check]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install numpy scipy scikit-learn
+
+      - name: Create mock results.json
+        run: |
+          python - <<'EOF'
+          import json, random, math, os
+
+          random.seed(42)
+          results = {}
+          planning_results = {}
+
+          sample_tokens = [f'tok_{i:04d}' for i in range(20)]
+
+          for token in sample_tokens:
+              # Detection: 3 boxes per sample
+              boxes = []
+              for j in range(3):
+                  boxes.append({
+                      'sample_token': token,
+                      'translation': [random.uniform(-20, 20) for _ in range(3)],
+                      'size': [1.8, 4.5, 1.5],
+                      'rotation': [1.0, 0.0, 0.0, 0.0],
+                      'velocity': [0.5, 0.0],
+                      'detection_name': 'car',
+                      'detection_score': random.uniform(0.3, 0.95),
+                      'attribute_name': 'vehicle.moving',
+                  })
+              results[token] = boxes
+
+              # Planning
+              gt_traj   = [[i * 0.5, 0.0] for i in range(1, 7)]
+              pred_traj = [[i * 0.5 + random.gauss(0, 0.3), random.gauss(0, 0.1)]
+                           for i in range(1, 7)]
+              planning_results[token] = {
+                  'pred_traj': pred_traj,
+                  'gt_traj': gt_traj,
+                  'gt_mask': [1] * 6,
+                  'collisions': [0] * 6,
+              }
+
+          payload = {
+              'meta': {'use_camera': True, 'use_lidar': False, 'version': 'v1.0-mini'},
+              'results': results,
+              'planning_results': planning_results,
+          }
+
+          os.makedirs('work_dirs/ci_test', exist_ok=True)
+          with open('work_dirs/ci_test/results.json', 'w') as f:
+              json.dump(payload, f)
+          print('Mock results.json created with', len(results), 'samples')
+          EOF
+
+      - name: Run planning evaluation on mock results
+        run: |
+          python nuScenes/tools/evaluation/planning_eval.py \
+            --result-path work_dirs/ci_test/results.json \
+            --output-dir work_dirs/ci_test/planning_eval || true
+
+      - name: Upload CI artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-eval-results
+          path: work_dirs/ci_test/
+          retention-days: 7

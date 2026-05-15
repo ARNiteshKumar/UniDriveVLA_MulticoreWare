@@ -1,0 +1,54 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Checkpoints and large data files
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+
+# Compiled extensions
+*.o
+*.a
+*.lib
+
+# Data directories (symlinked in practice)
+nuScenes/data/nuscenes/
+nuScenes/data/infos/*.pkl
+nuScenes/data/kmeans/
+
+# Work directories (generated outputs)
+nuScenes/work_dirs/
+work_dirs/
+
+# Logs
+*.log
+wandb/
+lightning_logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Temp
+tmp/
+temp/
