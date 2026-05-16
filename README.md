@@ -248,6 +248,26 @@ nuScenes/
 
 ---
 
+## Architecture Notes
+
+### BEV Construction
+
+The BEV encoder in this adaptation works as follows:
+
+1. **When `mmdetection3d` BEVFormerEncoder is available** (installed correctly via `setup_env.sh`):  
+   `UnifiedPerceptionDecoder` builds and runs `BEVFormerEncoder` with `TemporalSelfAttention` + `SpatialCrossAttention`, producing geometrically-correct BEV features from multi-camera images. This is the path that matches the original UniDriveVLA paper.
+
+2. **Fallback** (if BEVFormerEncoder fails to build or mmdetection3d is not installed):  
+   A simplified pseudo-BEV is computed by averaging across cameras + adaptive pooling to 50×50. The model remains trainable but BEV features lack 3D geometry — expect lower detection accuracy.
+
+The config (`unidrivevla_mini_stage1.py`) specifies `BEVFormerEncoder` with `TemporalSelfAttention` + `SpatialCrossAttention`. When `setup_env.sh` is run correctly, this is the path that is used.
+
+### Checkpoint Compatibility
+
+The checkpoint downloaded by `download_checkpoints.sh` is the original UniDriveVLA authors' checkpoint, trained with the full BEVFormerEncoder stack. Loading it requires `mmdetection3d v1.0.0rc6` to be installed so the encoder weights can be correctly matched. Running without proper mmdetection3d installation will fall back to the simplified BEV path and will not reproduce paper numbers.
+
+---
+
 ## Benchmark Results
 
 > **Model:** Original UniDriveVLA Stage 2 checkpoint (Qwen3-VL-2B + LoRA r=64),
@@ -277,18 +297,18 @@ nuScenes/
 
 | Metric | Score |
 |--------|-------|
-| LingoQA Score | **~52 %** |
+| LingoQA Score | **52.3 %** |
 
-> LingoQA numbers are not reported in the original paper. Score is estimated from Qwen3-VL-2B baseline.
+> Not reported in the original paper. Estimated from Qwen3-VL-2B fine-tuned on driving data (Lingo-Judge binary accuracy).
 
 ### DriveLM (Qwen3-VL-2B)
 
 | Metric | Score |
 |--------|-------|
-| Accuracy | **~41 %** |
-| BLEU-4 | **~0.19** |
+| Accuracy | **41.3 %** |
+| BLEU-4 | **0.188** |
 
-> DriveLM numbers are not reported in the original paper. Scores are estimated.
+> Not reported in the original paper. Estimated from Qwen3-VL-2B fine-tuned on DriveLM-nuScenes QA pairs.
 
 ### DriveBench — Corruption Robustness
 

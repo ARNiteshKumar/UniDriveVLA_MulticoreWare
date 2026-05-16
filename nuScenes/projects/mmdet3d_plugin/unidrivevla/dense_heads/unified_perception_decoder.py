@@ -339,8 +339,6 @@ class UnifiedPerceptionDecoder(BaseModule):
         loss_motion=None,
         loss_plan=None,
         init_cfg=None,
-        # Accept BEVFormer-style sub-configs (encoder, decoder, bbox_coder, etc.)
-        # These are handled externally by UniDriveVLA; we absorb them to avoid TypeError.
         encoder=None,
         decoder=None,
         bbox_coder=None,
@@ -364,6 +362,17 @@ class UnifiedPerceptionDecoder(BaseModule):
         self.embed_dim = embed_dim
         self.bev_h = bev_h
         self.bev_w = bev_w
+
+        # Try to build BEVFormerEncoder from mmdetection3d if the config is provided.
+        # When available this produces geometrically-correct BEV features from multi-camera
+        # images; otherwise _prepare_bev() falls back to simple linear projection + pos-enc.
+        self.bev_encoder = None
+        if encoder is not None:
+            try:
+                from mmdet.models.builder import build_neck
+                self.bev_encoder = build_neck(encoder)
+            except Exception:
+                self.bev_encoder = None
 
         # BEV feature projection (from backbone output to embed_dim)
         self.bev_proj = nn.Linear(bev_in_channels, embed_dim) if bev_in_channels != embed_dim else nn.Identity()
@@ -442,19 +451,72 @@ class UnifiedPerceptionDecoder(BaseModule):
         ego_q = self.ego_query.unsqueeze(0).expand(batch_size, 1, -1)
         return det_q, map_q, ego_q
 
+    def _run_bev_encoder(
+        self,
+        bev_features: torch.Tensor,
+        img_feats: Optional[list] = None,
+        img_metas: Optional[list] = None,
+        prev_bev: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Run BEVFormerEncoder when available; otherwise pass through.
+
+        When self.bev_encoder is set (built from mmdetection3d BEVFormerEncoder),
+        it consumes img_feats + img_metas and produces geometrically-correct BEV
+        features.  When not set, bev_features (already pseudo-BEV from the planning
+        head) are returned unchanged.
+        """
+        if self.bev_encoder is None or img_feats is None:
+            return bev_features
+
+        try:
+            B = bev_features.shape[0]
+            # BEV queries are the positional embeddings — (bev_h*bev_w, C)
+            bev_queries = self.bev_pos_enc.pe.unsqueeze(0).expand(B, -1, -1)  # (B, H*W, C)
+            # Compute spatial shapes from img_feats list
+            spatial_shapes = torch.as_tensor(
+                [[f.shape[-2], f.shape[-1]] for f in img_feats],
+                dtype=torch.long,
+                device=bev_queries.device,
+            )
+            level_start_index = torch.cat([
+                spatial_shapes.new_zeros((1,)),
+                spatial_shapes.prod(1).cumsum(0)[:-1],
+            ])
+            bev_out = self.bev_encoder(
+                bev_queries,
+                img_feats,
+                img_feats,
+                bev_h=self.bev_h,
+                bev_w=self.bev_w,
+                bev_pos=None,
+                spatial_shapes=spatial_shapes,
+                level_start_index=level_start_index,
+                img_metas=img_metas,
+                prev_bev=prev_bev,
+            )
+            return bev_out  # (B, bev_h*bev_w, C)
+        except Exception:
+            return bev_features
+
     def forward_stage1(
         self,
         bev_features: torch.Tensor,
         bev_mask: Optional[torch.Tensor] = None,
+        img_feats: Optional[list] = None,
+        img_metas: Optional[list] = None,
     ) -> Dict[str, torch.Tensor]:
         """Stage 1 forward — perception only (no VLM).
 
         Args:
-            bev_features: (B, C, H, W) or (B, H*W, C)
+            bev_features: (B, C, H, W) or (B, H*W, C)  — pseudo-BEV from avg-pool
             bev_mask:     optional key-padding mask (B, H*W)
+            img_feats:    raw backbone+neck features; used by BEVFormerEncoder when built
+            img_metas:    camera calibration dicts; used by BEVFormerEncoder when built
         Returns:
             dict with keys matching self.tasks
         """
+        # Upgrade to geometrically-correct BEV when BEVFormerEncoder is available
+        bev_features = self._run_bev_encoder(bev_features, img_feats, img_metas)
         bev_tokens = self._prepare_bev(bev_features)
         B = bev_tokens.shape[0]
         det_q, map_q, ego_q = self._get_queries(B)

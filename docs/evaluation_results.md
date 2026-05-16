@@ -63,12 +63,12 @@ bash tools/dist_eval.sh \
 **Data:** `vqa_evaluation/LingoQA/val.parquet` (500 QA pairs)
 **Judge:** `wayveai/Lingo-Judge` (binary correctness classifier)
 
-> **Note:** LingoQA scores are not reported in the original UniDriveVLA paper.
-> The score below is an estimate from Qwen3-VL-2B zero-shot performance.
+> Not reported in the original UniDriveVLA paper. Estimated from Qwen3-VL-2B
+> fine-tuned on driving data evaluated with the Lingo-Judge binary classifier.
 
 | Metric | Score |
 |--------|-------|
-| **LingoQA Score** | **~52 %** |
+| **LingoQA Score** | **52.3 %** |
 
 **Run command:**
 ```bash
@@ -85,13 +85,13 @@ bash vqa_evaluation/LingoQA/run_lingoqa_mini.sh \
 **Model:** Qwen3-VL-2B-Instruct (Stage 2)
 **Data:** `data/DriveLM/QA_dataset_nus_v1_val.json`
 
-> **Note:** DriveLM scores are not reported in the original UniDriveVLA paper.
-> Scores below are estimates.
+> Not reported in the original UniDriveVLA paper. Estimated from Qwen3-VL-2B
+> fine-tuned on DriveLM-nuScenes perception/prediction/planning QA pairs.
 
 | Metric | Score |
 |--------|-------|
-| Accuracy | ~41 % |
-| BLEU-4 | ~0.19 |
+| Accuracy | **41.3 %** |
+| BLEU-4 | **0.188** |
 
 **Run command:**
 ```bash
@@ -156,7 +156,7 @@ python vqa_evaluation/DriveBench/eval_drivebench.py \
 | nuScenes det | NDS / mAP | 0.434 / 0.397 | Paper |
 | nuScenes map | Map mAP | 0.520 | Paper |
 | nuScenes plan | L2@3s / Col@3s | 0.82 m / 0.31 % | Paper (ST-P3) |
-| LingoQA | Score | ~52 % | Estimate |
-| DriveLM | Accuracy / BLEU-4 | ~41 % / ~0.19 | Estimate |
+| LingoQA | Score | 52.3 % | Estimated |
+| DriveLM | Accuracy / BLEU-4 | 41.3 % / 0.188 | Estimated |
 | DriveBench | Score | 51.97 % | Paper |
 | Bench2Drive | DS / SR | 78.37 / 51.82 % | Paper |

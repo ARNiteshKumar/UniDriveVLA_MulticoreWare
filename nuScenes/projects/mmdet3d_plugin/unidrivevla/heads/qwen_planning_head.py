@@ -220,22 +220,25 @@ class QwenVL3APlanningHead(BaseModule):
     # Train / Test
     # ------------------------------------------------------------------
 
-    def forward_train(self, img=None, img_feats=None, bev_features=None, **kwargs):
+    def forward_train(self, img=None, img_feats=None, bev_features=None, img_metas=None, **kwargs):
         """Stage 2 training forward.
 
-        1. Run Stage 1 perception decoder on BEV features.
-        2. Run VLM on multi-camera images.
-        3. Inject VLM tokens into Stage 2 decoder.
+        1. Build pseudo-BEV from img_feats (or use BEVFormerEncoder if built into decoder).
+        2. Run Stage 1 perception decoder.
+        3. Run VLM on multi-camera images and inject tokens into Stage 2.
         4. Compute all losses.
         """
         losses = {}
 
-        # Build BEV features from backbone+neck output when not pre-computed
+        # Build pseudo-BEV features from backbone+neck output (fallback when no BEVFormerEncoder)
         if bev_features is None and img_feats is not None:
             bev_features = self._feats_to_bev(img_feats)
 
         if self.perception_decoder is not None and bev_features is not None:
-            s1_out = self.perception_decoder.forward_stage1(bev_features)
+            # Pass img_feats + img_metas so the decoder can use BEVFormerEncoder if built
+            s1_out = self.perception_decoder.forward_stage1(
+                bev_features, img_feats=img_feats, img_metas=img_metas
+            )
             if img is not None:
                 vlm_tokens = self._extract_vlm_tokens(img)
                 s2_out = self.perception_decoder.forward_stage2(s1_out, bev_features, vlm_tokens)
@@ -247,18 +250,20 @@ class QwenVL3APlanningHead(BaseModule):
 
         return {"losses": losses}
 
-    def forward_test(self, img=None, img_feats=None, bev_features=None, **kwargs):
+    def forward_test(self, img=None, img_feats=None, bev_features=None, img_metas=None, **kwargs):
         """Stage 2 inference forward."""
         if self.perception_decoder is None:
             return {}
 
-        # Build BEV features from backbone+neck output when not pre-computed
+        # Build pseudo-BEV features from backbone+neck output (fallback when no BEVFormerEncoder)
         if bev_features is None and img_feats is not None:
             bev_features = self._feats_to_bev(img_feats)
 
         with torch.no_grad():
             if bev_features is not None:
-                s1_out = self.perception_decoder.forward_stage1(bev_features)
+                s1_out = self.perception_decoder.forward_stage1(
+                    bev_features, img_feats=img_feats, img_metas=img_metas
+                )
                 if img is not None:
                     self._load_vlm()
                     vlm_tokens = self._extract_vlm_tokens(img)
