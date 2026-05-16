@@ -52,3 +52,4 @@ Thumbs.db
 # Temp
 tmp/
 temp/
+.claude/
