@@ -1,167 +1,148 @@
 name: Bench2Drive Code Check
 
-# NOTE: Bench2Drive closed-loop evaluation requires CARLA 0.9.15 running locally.
-# This workflow only checks code correctness (syntax, import structure).
-# For actual CARLA evaluation, follow docs/bench2drive_setup.md and run locally.
+# NOTE: Bench2Drive closed-loop evaluation requires CARLA 0.9.15 locally.
+# This workflow checks code correctness only (syntax, config params, docs).
+# For actual closed-loop evaluation see docs/bench2drive_setup.md.
 
 on:
   push:
-    branches:
-      - main
-      - 'claude/*'
+    branches: [main, 'claude/*']
   pull_request:
   workflow_dispatch:
 
 jobs:
   code-check:
-    name: Bench2Drive Code Correctness Check
+    name: Bench2Drive Code Correctness
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.10' }
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Remind user about CARLA requirement
+      - name: CARLA requirement notice
         run: |
           echo "============================================================"
           echo " NOTICE: Full Bench2Drive evaluation requires:"
           echo "   - CARLA 0.9.15 installed locally"
-          echo "   - A GPU with >= 24 GB VRAM"
-          echo "   - carla Python package installed"
+          echo "   - GPU with >= 24 GB VRAM"
+          echo "   - carla Python package"
           echo ""
-          echo " See docs/bench2drive_setup.md for instructions."
+          echo "   See docs/bench2drive_setup.md for instructions."
           echo "============================================================"
 
-      - name: Syntax check all project Python files
+      - name: Syntax check all Python files
         run: |
-          python - <<'EOF'
-          import ast, glob
-
-          patterns = [
-              'nuScenes/**/*.py',
-              'vqa_evaluation/**/*.py',
-          ]
-          all_files = []
-          for pat in patterns:
-              all_files.extend(glob.glob(pat, recursive=True))
-
+          python - << 'PYEOF'
+          import ast, glob, sys
+          files = (
+              glob.glob('nuScenes/**/*.py', recursive=True) +
+              glob.glob('vqa_evaluation/**/*.py', recursive=True)
+          )
           errors = []
-          for path in sorted(all_files):
+          for path in sorted(files):
               try:
-                  with open(path) as f:
-                      ast.parse(f.read())
+                  ast.parse(open(path).read())
               except SyntaxError as e:
                   errors.append(f'{path}: {e}')
-
           if errors:
-              print('Syntax errors found:')
+              print('Syntax errors:')
               for e in errors:
                   print(f'  {e}')
-              raise SystemExit(1)
-          print(f'All {len(all_files)} Python files pass syntax check.')
-          EOF
+              sys.exit(1)
+          print(f'All {len(files)} Python files pass syntax check.')
+          PYEOF
 
       - name: Validate YAML workflows
         run: |
-          python - <<'EOF'
-          import glob
+          pip install pyyaml --quiet
+          python - << 'PYEOF'
+          import glob, yaml, sys
+          errors = []
+          for path in glob.glob('.github/workflows/*.yml'):
+              try:
+                  yaml.safe_load(open(path).read())
+                  print(f'OK: {path}')
+              except yaml.YAMLError as e:
+                  errors.append(f'{path}: {e}')
+          if errors:
+              for e in errors:
+                  print(f'FAIL: {e}')
+              sys.exit(1)
+          PYEOF
 
-          try:
-              import yaml
-          except ImportError:
-              import subprocess
-              subprocess.run(['pip', 'install', 'pyyaml', '-q'], check=True)
-              import yaml
-
-          workflow_files = glob.glob('.github/workflows/*.yml')
-          for path in workflow_files:
-              with open(path) as f:
-                  yaml.safe_load(f)
-              print(f'YAML OK: {path}')
-          EOF
-
-      - name: Check documentation exists
+      - name: Check required documentation
         run: |
-          required_docs=(
-              "docs/installation.md"
-              "docs/data_preparation.md"
-              "docs/train_eval_nuscenes_mini.md"
-              "docs/bench2drive_setup.md"
-              "docs/evaluation_results.md"
-          )
-          all_ok=true
-          for doc in "${required_docs[@]}"; do
-              if [ -f "$doc" ]; then
-                  echo "OK: $doc"
-              else
-                  echo "MISSING: $doc"
-                  all_ok=false
-              fi
-          done
-          if [ "$all_ok" != "true" ]; then
-              exit 1
-          fi
+          python - << 'PYEOF'
+          import os, sys
+          required = [
+              'docs/installation.md',
+              'docs/data_preparation.md',
+              'docs/train_eval_nuscenes_mini.md',
+              'docs/bench2drive_setup.md',
+              'docs/evaluation_results.md',
+          ]
+          missing = [d for d in required if not os.path.isfile(d)]
+          for d in required:
+              status = 'OK' if os.path.isfile(d) else 'MISSING'
+              print(f'{status}: {d}')
+          if missing:
+              sys.exit(1)
+          PYEOF
 
-      - name: Verify nuScenes mini config parameters
+      - name: Verify nuScenes mini config params (ast parse)
         run: |
-          python - <<'EOF'
-          # Parse stage1 config as Python dict (no mmcv needed)
-          import ast, re
+          python - << 'PYEOF'
+          import ast, sys
 
           with open('nuScenes/projects/configs/UniDriveVLA/unidrivevla_mini_stage1.py') as f:
               src = f.read()
-
-          # Extract key assignments using ast
           tree = ast.parse(src)
-          assignments = {}
+
+          # Extract simple name=value assignments
+          vals = {}
           for node in ast.walk(tree):
               if isinstance(node, ast.Assign):
-                  for target in node.targets:
-                      if isinstance(target, ast.Name):
+                  for t in node.targets:
+                      if isinstance(t, ast.Name):
                           try:
-                              assignments[target.id] = ast.literal_eval(node.value)
+                              vals[t.id] = ast.literal_eval(node.value)
                           except Exception:
                               pass
 
           checks = {
-              'bev_h_': (50, 'BEV height should be 50 for mini'),
-              'bev_w_': (50, 'BEV width should be 50 for mini'),
-              'queue_length': (3, 'Queue length should be 3 — BEVFormer-tiny uses 3'),
-              'version': ('v1.0-mini', 'Version should be v1.0-mini'),
-              'total_epochs': (24, 'Stage 1 should train for 24 epochs'),
+              'bev_h_':      (50,         'BEV height = 50'),
+              'bev_w_':      (50,         'BEV width  = 50'),
+              'queue_length':(3,          'queue_length = 3'),
+              'version':     ('v1.0-mini','version = v1.0-mini'),
+              'total_epochs':(24,         'total_epochs = 24'),
           }
-
           failed = []
-          for var, (expected, msg) in checks.items():
-              val = assignments.get(var)
-              if val != expected:
-                  failed.append(f'  FAIL: {var}={val!r} (expected {expected!r}) — {msg}')
+          for var, (expected, desc) in checks.items():
+              got = vals.get(var)
+              if got == expected:
+                  print(f'  OK  : {desc}')
               else:
-                  print(f'  OK: {var} = {val!r}')
-
+                  failed.append(f'  FAIL: {desc}  (got {got!r}, expected {expected!r})')
           if failed:
               for f in failed:
                   print(f)
-              raise SystemExit(1)
-          print('All nuScenes mini config checks passed.')
-          EOF
+              sys.exit(1)
+          print('All config checks passed.')
+          PYEOF
 
-      - name: Publish job summary
+      - name: Publish step summary
         if: always()
         run: |
-          echo "## Bench2Drive Code Check Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "This workflow validates code correctness only." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Check | Notes |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Python syntax | All .py files in nuScenes/ and vqa_evaluation/ |" >> $GITHUB_STEP_SUMMARY
-          echo "| YAML validity | All .github/workflows/*.yml files |" >> $GITHUB_STEP_SUMMARY
-          echo "| Documentation | Required docs/*.md files |" >> $GITHUB_STEP_SUMMARY
-          echo "| Config params | queue_length=3, bev_h=50, bev_w=50, version=v1.0-mini |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> **Full closed-loop evaluation requires CARLA 0.9.15.**" >> $GITHUB_STEP_SUMMARY
-          echo "> See [bench2drive_setup.md](docs/bench2drive_setup.md)." >> $GITHUB_STEP_SUMMARY
+          cat >> "$GITHUB_STEP_SUMMARY" << 'MD'
+          ## Bench2Drive Code Check
+
+          | Check | Description |
+          |-------|-------------|
+          | Python syntax | All .py files in nuScenes/ and vqa_evaluation/ |
+          | YAML validity | All .github/workflows/*.yml |
+          | Documentation | Required docs/*.md files |
+          | Config params | bev_h=50, bev_w=50, queue_length=3, v1.0-mini |
+
+          > **Full closed-loop evaluation requires CARLA 0.9.15.**
+          > See [bench2drive_setup.md](docs/bench2drive_setup.md).
+          MD

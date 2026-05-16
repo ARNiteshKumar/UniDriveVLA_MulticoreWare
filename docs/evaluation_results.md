@@ -1,219 +1,186 @@
-# Evaluation Results
+# Evaluation Results — UniDriveVLA nuScenes Mini
 
-Structured metric tables for all UniDriveVLA benchmarks.
-Run the corresponding evaluation commands to populate with actual values.
+> Results marked **[CI dry-run]** are generated from mock data in GitHub Actions
+> (no GPU, no checkpoint). Replace with real numbers after running
+> `bash scripts/run_benchmarks.sh` locally with a downloaded checkpoint.
 
 ---
 
 ## nuScenes Mini — 3D Object Detection (Stage 1)
 
 **Metric definitions:**
-- **NDS** (nuScenes Detection Score): weighted combination of mAP, mATE, mASE, mAOE, mAVE, mAAE
-- **mAP**: mean Average Precision (IoU-based matching over class set)
-- **mATE**: mean Average Translation Error (m, L2 distance of box centres)
-- **mASE**: mean Average Scale Error (1 − IoU of boxes matched by centre)
-- **mAOE**: mean Average Orientation Error (rad, yaw angle error)
-- **mAVE**: mean Average Velocity Error (m/s)
-- **mAAE**: mean Average Attribute Error
+- **NDS**: nuScenes Detection Score (weighted combination of mAP and errors)
+- **mAP**: mean Average Precision over 10 classes
+- **mATE / mASE / mAOE / mAVE / mAAE**: translation / scale / orientation / velocity / attribute errors
 
-**Command:**
+**Run locally:**
 ```bash
-python tools/evaluation/nuscenes_eval.py \
-    --result-path work_dirs/mini_stage1/results.json \
-    --dataroot data/nuscenes --version v1.0-mini --eval-set mini_val \
-    --eval-detection --output-dir work_dirs/mini_stage1/eval_results
+cd nuScenes
+bash tools/dist_eval.sh \
+    projects/configs/UniDriveVLA/unidrivevla_mini_stage1.py \
+    /path/to/epoch_24.pth \
+    1 \
+    --eval bbox
 ```
 
-| Model | Checkpoint | NDS | mAP | mATE | mASE | mAOE | mAVE | mAAE |
-|-------|-----------|:---:|:---:|:----:|:----:|:----:|:----:|:----:|
-| UniDriveVLA-mini S1 (T4, 24ep) | epoch_24.pth | — | — | — | — | — | — | — |
+| Model | NDS | mAP | mATE↓ | mASE↓ | mAOE↓ | mAVE↓ | mAAE↓ |
+|-------|:---:|:---:|:-----:|:-----:|:-----:|:-----:|:-----:|
+| UniDriveVLA-mini Stage 1 | — | — | — | — | — | — | — |
 
-### Per-Class AP
-
-| Class | AP |
-|-------|----|
-| car | — |
-| truck | — |
-| construction_vehicle | — |
-| bus | — |
-| trailer | — |
-| barrier | — |
-| motorcycle | — |
-| bicycle | — |
-| pedestrian | — |
-| traffic_cone | — |
+> **Note:** nuScenes mini val has only ~49 samples (3 scenes); metrics have high variance (±0.05–0.10 NDS). Use full trainval for reliable benchmarking.
 
 ---
 
 ## nuScenes Mini — Online Map Prediction (Stage 1)
 
-**Metric definitions:**
-- **mIoU**: mean Intersection over Union for each map element class (divider, ped_crossing, boundary)
-
-**Command:**
-```bash
-python tools/evaluation/nuscenes_eval.py \
-    --result-path work_dirs/mini_stage1/results.json \
-    --dataroot data/nuscenes --version v1.0-mini --eval-set mini_val \
-    --eval-map --output-dir work_dirs/mini_stage1/eval_results
-```
-
-| Model | mIoU (divider) | mIoU (ped_crossing) | mIoU (boundary) | mIoU (avg) |
-|-------|:--------------:|:-------------------:|:---------------:|:----------:|
-| UniDriveVLA-mini S1 | — | — | — | — |
+| Model | mIoU divider | mIoU ped_crossing | mIoU boundary | mIoU avg |
+|-------|:------------:|:-----------------:|:-------------:|:--------:|
+| UniDriveVLA-mini Stage 1 | — | — | — | — |
 
 ---
 
-## nuScenes Mini — Ego Motion / Planning (Stage 1)
+## nuScenes Mini — Ego Planning (Stage 1 & 2)
 
-**Metric definitions:**
-- **L2 @ Xs**: L2 distance between predicted and ground-truth ego trajectory at horizon X seconds
-- **CR @ Xs** (Collision Rate): fraction of predicted trajectories that intersect annotated obstacles at X seconds
-- Lower is better for all planning metrics.
+**Metrics:** L2 displacement (m) and Collision Rate (%) per time horizon.
+Lower is better.
 
-**Command:**
+**Run locally:**
 ```bash
-python tools/evaluation/planning_eval.py \
-    --result-path work_dirs/mini_stage1/results.json \
-    --output-dir  work_dirs/mini_stage1/planning_results
+python nuScenes/tools/evaluation/planning_eval.py \
+    --result-path work_dirs/.../results.json \
+    --gt-path     nuScenes/data/infos/nuscenes_mini_temporal_val.pkl \
+    --output-dir  results/planning
 ```
 
-| Model | L2 @ 1s | L2 @ 2s | L2 @ 3s | CR @ 1s | CR @ 2s | CR @ 3s |
-|-------|:-------:|:-------:|:-------:|:-------:|:-------:|:-------:|
-| UniDriveVLA-mini S1 | — | — | — | — | — | — |
+**CI dry-run results** (mock data, 49 val samples, no checkpoint):
+
+| Step | L2 (m) | Collision (%) |
+|------|:------:|:-------------:|
+| t = 1 s | 0.384 | 0.15 |
+| t = 2 s | 0.664 | 0.20 |
+| t = 3 s | 0.931 | 1.22 |
+| t = 4 s | 1.213 | 1.17 |
+| t = 5 s | 1.554 | 2.18 |
+| t = 6 s | 1.956 | 2.24 |
+| **avg** | **1.117** | **1.19** |
+
+> These are **simulated** numbers from the CI dry-run. Run with a real checkpoint to obtain actual results.
 
 ---
 
 ## DriveLM (Stage 2)
 
-DriveLM tests multi-camera scene understanding and reasoning through structured QA pairs
-(perception, prediction, and planning categories).
+DriveLM tests multi-camera scene understanding via structured QA (perception, prediction, planning).
 
-**Metric definitions:**
-- **Accuracy**: exact-match accuracy for multiple-choice / short-answer questions
-- **BLEU-4**: 4-gram precision score (corpus level)
-- **CIDEr**: consensus-based image description evaluation metric
-- **METEOR**: unigram recall against references (if nltk available)
-- **DriveLM score**: official weighted combination of Accuracy, BLEU-4, CIDEr
-
-**Command:**
+**Run locally:**
 ```bash
 python vqa_evaluation/DriveLM/qwenvl3_eval_drivelm.py \
-    --model_path work_dirs/mini_stage2/latest.pth \
-    --data_path  data/drivelm/v1_1_val_nus_q_only.json \
-    --image_root data/nuscenes \
-    --output_dir results/drivelm
+    --model_path "$VLM_PRETRAINED_PATH" \
+    --data_path  data/DriveLM/QA_dataset_nus_v1_val.json \
+    --image_root nuScenes/data/nuscenes \
+    --output_path results/drivelm/preds.json
 
-python vqa_evaluation/DriveLM/eval_drivelm.py \
-    --predictions results/drivelm/drivelm_preds.json \
-    --answers     data/drivelm/v1_1_val_nus_a.json \
-    --output-dir  results/drivelm
+python vqa_evaluation/DriveLM/score_drivelm.py \
+    --pred_path results/drivelm/preds.json \
+    --gt_path   data/DriveLM/QA_dataset_nus_v1_val.json \
+    --output    results/drivelm/scores.json
 ```
 
-| Model | Accuracy | BLEU-4 | CIDEr | METEOR | DriveLM Score |
-|-------|:--------:|:------:|:-----:|:------:|:-------------:|
-| UniDriveVLA-mini S2 | — | — | — | — | — |
+| Model | Accuracy | BLEU-4 | DriveLM Score |
+|-------|:--------:|:------:|:-------------:|
+| UniDriveVLA-mini Stage 2 | — | — | — |
 
-### Per-Category Breakdown
-
-| Category | Accuracy |
-|----------|:--------:|
-| Perception | — |
-| Prediction | — |
-| Planning   | — |
+**Expected range** (from original UniDriveVLA paper, full dataset): Accuracy ~41%, BLEU-4 ~0.19, DriveLM ~0.30
 
 ---
 
-## LingoQA (Stage 2) — 500 Samples
+## LingoQA (Stage 2) — 500 val samples
 
-LingoQA evaluates language-grounded scene understanding for autonomous driving.
-Uses a learned judge model (LingoJudge) for binary correctness scoring.
+LingoQA evaluates language-grounded driving scene understanding using a learned judge model.
 
-**Metric definitions:**
-- **LingoQA Score**: percentage of judge-evaluated correct answers (official metric)
-- Sub-categories: Action, Spatial, Attribute, Prediction, Planning
-
-**Command:**
+**Run locally:**
 ```bash
 bash vqa_evaluation/LingoQA/run_lingoqa_mini.sh \
-    work_dirs/mini_stage2/latest.pth \
-    data/LingoQA/images/val
+    "$VLM_PRETRAINED_PATH" \
+    data/LingoQA/images/val \
+    results/lingoqa
 ```
 
-| Model | LingoQA Score | Action | Spatial | Attribute | Prediction | Planning |
-|-------|:-------------:|:------:|:-------:|:---------:|:----------:|:--------:|
-| UniDriveVLA-mini S2 | — % | — | — | — | — | — |
+| Model | LingoQA Score |
+|-------|:-------------:|
+| UniDriveVLA-mini Stage 2 | — |
+
+**Expected range** (from original paper): ~52–55%
 
 ---
 
 ## DriveBench (Stage 2) — Corruption Robustness
 
-DriveBench tests model robustness by evaluating on nuScenes data corrupted with
-various sensor artifacts at 3 severity levels.
+**Metrics:** clean accuracy, mPC (mean Performance under Corruption), rPC (mPC / clean). Higher is better.
 
-**Metric definitions:**
-- **Accuracy**: exact-match accuracy on each corruption type/severity
-- **mPC** (mean Performance under Corruptions): mean accuracy across all corruption types
-- **rPC** (relative PC): mPC / clean_accuracy — measures degradation relative to clean performance
-- Higher is better for all robustness metrics.
-
-**Command:**
+**Run locally:**
 ```bash
+python vqa_evaluation/DriveBench/inference/qwenvl3_vllm.py \
+    --model_path "$VLM_PRETRAINED_PATH" \
+    --data_root  data/DriveBench \
+    --output_path results/drivebench/preds.json
+
 python vqa_evaluation/DriveBench/eval_drivebench.py \
-    --model-config projects/configs/UniDriveVLA/unidrivevla_mini_stage2.py \
-    --checkpoint   work_dirs/mini_stage2/latest.pth \
-    --data-root    data/drivebench \
-    --output-dir   results/drivebench
+    --pred_path results/drivebench/preds.json \
+    --data_root data/DriveBench \
+    --output    results/drivebench/scores.json
 ```
+
+**CI dry-run results** (mock data, no checkpoint):
 
 | Model | Clean Acc | mPC | rPC |
 |-------|:---------:|:---:|:---:|
-| UniDriveVLA-mini S2 | — | — | — |
+| UniDriveVLA-mini Stage 2 [CI dry-run] | 62.1% | 52.0% | 0.838 |
 
-### Per-Corruption Accuracy
+**Per-corruption accuracy (CI dry-run):**
 
-| Corruption | Severity 1 | Severity 2 | Severity 3 |
-|------------|:----------:|:----------:|:----------:|
-| CameraBlur | — | — | — |
-| CameraFog | — | — | — |
-| CameraRain | — | — | — |
-| CameraSnow | — | — | — |
-| CameraContrast | — | — | — |
-| CameraBrightness | — | — | — |
-| CameraSaturation | — | — | — |
-| CameraJpeg | — | — | — |
+| Corruption | Accuracy | Drop |
+|------------|:--------:|:----:|
+| fog | 51.6% | 10.5% |
+| rain | 53.0% | 9.1% |
+| night | 48.7% | 13.4% |
+| motion_blur | 51.6% | 10.5% |
+| gaussian_noise | 48.9% | 13.2% |
+| brightness | 54.9% | 7.2% |
+| contrast | 55.7% | 6.4% |
+
+> These are **simulated** from CI dry-run mock data. Run locally for real results.
 
 ---
 
 ## Bench2Drive — Closed-Loop (Stage 2)
 
-> **Requires CARLA 0.9.15 installed locally.**
-> See [bench2drive_setup.md](bench2drive_setup.md) for setup instructions.
-> This cannot run in standard CI.
+> **Requires CARLA 0.9.15 locally.** See [bench2drive_setup.md](bench2drive_setup.md).
 
-**Metric definitions:**
-- **DS** (Driving Score): primary metric; weighted combination of RC and IS
-- **RC** (Route Completion %): percentage of route distance completed
-- **IS** (Infraction Score): multiplicative penalty for infractions (collisions, red lights, etc.)
-- **SR** (Success Rate): fraction of routes completed without critical infractions
-- **MATA** (Multi-Ability Test Aggregation): aggregated score over scenario sub-categories
-
-| Model | DS | SR (%) | RC (%) | IS | MATA |
-|-------|----|:------:|:------:|:--:|:----:|
-| UniDriveVLA-mini S2 | — | — | — | — | — |
+| Model | DS | SR (%) | RC (%) | IS |
+|-------|----|:------:|:------:|:--:|
+| UniDriveVLA-mini Stage 2 | — | — | — | — |
 
 ---
 
-## Notes on nuScenes Mini Variance
+## How to Get Real Results
 
-The mini validation split contains only ~81 samples (3 scenes). This means:
+```bash
+# 1. Set up environment
+bash scripts/setup_env.sh
 
-1. Detection/mapping metrics will vary significantly (±0.05–0.10 NDS) between runs
-2. A single missed or wrongly-predicted scene can shift mAP by >5 points
-3. Results should be treated as sanity checks, not performance benchmarks
-4. For reliable benchmarking, retrain and evaluate on the full nuScenes dataset
+# 2. Download checkpoints
+bash scripts/download_checkpoints.sh
 
-To reproduce results on the full dataset, change:
-- `version = 'v1.0'`
-- `ann_file_train/val` to the full temporal PKL files
-- `samples_per_gpu = 2` (or higher, depending on GPU memory)
+# 3. Prepare nuScenes mini data
+bash scripts/prepare_data.sh /path/to/nuscenes
+
+# 4. Run all benchmarks
+bash scripts/run_benchmarks.sh \
+    --checkpoint checkpoints/stage3/mp_rank_00_model_states.pt \
+    --num-gpus 1
+
+# Results saved to results/benchmark_summary.txt
+```
+
+Populate this file by replacing `—` values with numbers from `results/benchmark_summary.txt`.
