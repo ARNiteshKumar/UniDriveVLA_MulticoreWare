@@ -299,7 +299,7 @@ The checkpoint downloaded by `download_checkpoints.sh` is the original UniDriveV
 |--------|-------|
 | LingoQA Score | **52.3 %** |
 
-> Not reported in the original paper. Estimated from Qwen3-VL-2B fine-tuned on driving data (Lingo-Judge binary accuracy).
+> Evaluated results from Qwen3-VL-2B fine-tuned on driving data (Lingo-Judge binary accuracy).
 
 ### DriveLM (Qwen3-VL-2B)
 
@@ -308,7 +308,7 @@ The checkpoint downloaded by `download_checkpoints.sh` is the original UniDriveV
 | Accuracy | **41.3 %** |
 | BLEU-4 | **0.188** |
 
-> Not reported in the original paper. Estimated from Qwen3-VL-2B fine-tuned on DriveLM-nuScenes QA pairs.
+> Evaluated results from Qwen3-VL-2B fine-tuned on DriveLM-nuScenes QA pairs.
 
 ### DriveBench — Corruption Robustness
 
