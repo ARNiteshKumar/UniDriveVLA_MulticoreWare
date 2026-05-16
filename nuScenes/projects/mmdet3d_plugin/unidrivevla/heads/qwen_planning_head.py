@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from mmdet.models.builder import HEADS, build_head
 from mmcv.runner import BaseModule
 
@@ -67,6 +68,8 @@ class QwenVL3APlanningHead(BaseModule):
         collision_loss_weight: float = 0.0,
         map_bound_loss_weight: float = 0.0,
         vlm_grad_scale: float = 1.0,
+        bev_h: int = 50,
+        bev_w: int = 50,
         unified_decoder_cfg: Optional[dict] = None,
         init_cfg=None,
         **kwargs,
@@ -80,6 +83,8 @@ class QwenVL3APlanningHead(BaseModule):
         self.attn_implementation = attn_implementation
         self.occ_loss_weight = occ_loss_weight
         self.depth_loss_weight = depth_loss_weight
+        self._bev_h = bev_h
+        self._bev_w = bev_w
 
         # Build the stage-1 perception decoder
         if unified_decoder_cfg is not None:
@@ -191,10 +196,31 @@ class QwenVL3APlanningHead(BaseModule):
         return trajs.reshape(-1, self.action_horizon, self.action_dim)
 
     # ------------------------------------------------------------------
+    # BEV feature construction from backbone+neck features
+    # ------------------------------------------------------------------
+
+    def _feats_to_bev(self, img_feats: list) -> torch.Tensor:
+        """Convert backbone+neck multi-camera features to pseudo-BEV tokens.
+
+        Uses the finest feature scale, averages over cameras, then
+        adaptive-avg-pools to (bev_h, bev_w).
+
+        Args:
+            img_feats: list of (B, N_cam, C, H, W) tensors (finest first)
+        Returns:
+            (B, bev_h*bev_w, C) BEV tokens
+        """
+        feat = img_feats[0]  # (B, N_cam, C, H, W) — finest level
+        B, N, C, H, W = feat.shape
+        feat = feat.mean(dim=1)  # average over cameras → (B, C, H, W)
+        feat = F.adaptive_avg_pool2d(feat, (self._bev_h, self._bev_w))  # (B, C, bev_h, bev_w)
+        return feat.flatten(2).permute(0, 2, 1)  # (B, bev_h*bev_w, C)
+
+    # ------------------------------------------------------------------
     # Train / Test
     # ------------------------------------------------------------------
 
-    def forward_train(self, img=None, bev_features=None, **kwargs):
+    def forward_train(self, img=None, img_feats=None, bev_features=None, **kwargs):
         """Stage 2 training forward.
 
         1. Run Stage 1 perception decoder on BEV features.
@@ -203,6 +229,10 @@ class QwenVL3APlanningHead(BaseModule):
         4. Compute all losses.
         """
         losses = {}
+
+        # Build BEV features from backbone+neck output when not pre-computed
+        if bev_features is None and img_feats is not None:
+            bev_features = self._feats_to_bev(img_feats)
 
         if self.perception_decoder is not None and bev_features is not None:
             s1_out = self.perception_decoder.forward_stage1(bev_features)
@@ -217,10 +247,14 @@ class QwenVL3APlanningHead(BaseModule):
 
         return {"losses": losses}
 
-    def forward_test(self, img=None, bev_features=None, **kwargs):
+    def forward_test(self, img=None, img_feats=None, bev_features=None, **kwargs):
         """Stage 2 inference forward."""
         if self.perception_decoder is None:
             return {}
+
+        # Build BEV features from backbone+neck output when not pre-computed
+        if bev_features is None and img_feats is not None:
+            bev_features = self._feats_to_bev(img_feats)
 
         with torch.no_grad():
             if bev_features is not None:

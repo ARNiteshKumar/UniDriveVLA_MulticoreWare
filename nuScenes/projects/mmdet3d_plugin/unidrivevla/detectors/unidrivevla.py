@@ -139,8 +139,12 @@ class UniDriveVLA(BaseDetector):
 
         img_last = self._select_last_from_queue(img)
 
+        # Extract multi-camera image features via backbone + neck
+        img_feats = self.extract_feat(img_last)
+
         ret = self.planning_head.forward_train(
             img=img_last,
+            img_feats=img_feats,
             timestamp=timestamp,
             projection_mat=projection_mat,
             image_wh=image_wh,
@@ -206,8 +210,12 @@ class UniDriveVLA(BaseDetector):
 
         img_last = self._select_last_from_queue(img)
 
+        # Extract multi-camera image features via backbone + neck
+        img_feats = self.extract_feat(img_last)
+
         pred = self.planning_head.forward_test(
             img=img_last,
+            img_feats=img_feats,
             timestamp=timestamp,
             projection_mat=projection_mat,
             image_wh=image_wh,
