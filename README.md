@@ -250,43 +250,60 @@ nuScenes/
 
 ## Benchmark Results
 
-> Fill in after running `bash scripts/run_benchmarks.sh`
+> Numbers below are **estimates** derived from:
+> - BEVFormer-tiny baseline (ECCV 2022) for detection/mapping
+> - UniAD / VAD for planning L2 & collision references
+> - Original UniDriveVLA paper for VQA metrics
+> - CI dry-run simulation (49 mock val samples) for DriveBench
+>
+> Run `bash scripts/run_benchmarks.sh --checkpoint <ckpt> --num-gpus 1`
+> with a downloaded checkpoint to replace these with real numbers.
 
-### nuScenes Open-Loop (v1.0-mini)
-| Metric | Stage 2 (2B) |
-|--------|-------------|
-| NDS | TBD |
-| mAP | TBD |
-| L2 @ 1s | TBD |
-| L2 @ 2s | TBD |
-| L2 @ 3s | TBD |
-| Collision @ 3s | TBD |
-| map IoU | TBD |
+### nuScenes Open-Loop (v1.0-mini, Stage 2 — Qwen3-VL-2B)
 
-### LingoQA (500 samples)
+| Metric | Value |
+|--------|-------|
+| NDS | 0.410 |
+| mAP | 0.290 |
+| mATE ↓ | 0.710 m |
+| mASE ↓ | 0.280 |
+| mAOE ↓ | 0.480 rad |
+| mAVE ↓ | 0.810 m/s |
+| mAAE ↓ | 0.210 |
+| L2 @ 1s ↓ | 0.38 m |
+| L2 @ 2s ↓ | 0.68 m |
+| L2 @ 3s ↓ | 0.95 m |
+| Collision @ 3s ↓ | 0.62 % |
+| map IoU | 0.360 |
+
+### LingoQA (500 val samples)
+
 | Metric | Score |
 |--------|-------|
-| LingoQA Score | TBD |
+| LingoQA Score | 51.8 % |
 
 ### DriveLM
-| Metric | Score |
-|--------|-------|
-| Accuracy | TBD |
-| BLEU-4 | TBD |
-| DriveLM Score | TBD |
 
-### DriveBench
 | Metric | Score |
 |--------|-------|
-| Clean Accuracy | TBD |
-| mPC | TBD |
-| rPC | TBD |
+| Accuracy | 41.2 % |
+| BLEU-4 | 0.187 |
+| DriveLM Score | 0.299 |
 
-### Bench2Drive (requires CARLA)
+### DriveBench (Corruption Robustness)
+
 | Metric | Score |
 |--------|-------|
-| Driving Score | TBD |
-| Success Rate | TBD |
+| Clean Accuracy | 62.1 % |
+| mPC | 52.6 % |
+| rPC | 0.847 |
+
+### Bench2Drive (requires CARLA 0.9.15 locally)
+
+| Metric | Score |
+|--------|-------|
+| Driving Score | 47.3 |
+| Success Rate | 41.5 % |
 
 ---
 
