@@ -210,7 +210,7 @@ bash tools/dist_train.sh \
     8
 ```
 
-> **Trained on:** Local PC · 
+> **Trained on:** Local PC (Intel Core i7 vPro, CPU-only) **
 > Full training with CUDA is required to reproduce paper-level results.  
 > CPU-only mode confirms the pipeline runs end-to-end; training epochs complete but are slow and without GPU acceleration.
 
@@ -225,7 +225,7 @@ bash tools/dist_train.sh \
     1
 ```
 
-> **Trained on:** Local PC ·
+> **Trained on:** Local PC (Intel Core i7 vPro, CPU-only) **
 > Stage 2 requires loading Qwen3-VL-2B (≈ 4 GB) on top of Stage 1 weights.  
 > A CUDA GPU with ≥ 16 GB VRAM is needed for practical training speed.
 
