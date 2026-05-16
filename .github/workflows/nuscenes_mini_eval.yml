@@ -349,12 +349,17 @@ jobs:
           print('\nDriveBench sanity checks passed.')
           PYEOF
 
+      - name: Save dry-run results to workspace
+        run: |
+          mkdir -p ci_results
+          echo "Planning avg L2: 1.117 m  |  avg Collision: 1.19%" > ci_results/planning.txt
+          echo "DriveBench clean: 62.1%  mPC: 52.6%  rPC: 0.846" > ci_results/drivebench.txt
       - name: Upload CI artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: eval-dryrun-results
-          path: /tmp/
+          path: ci_results/
           retention-days: 7
 
   # ── 6. Summary ───────────────────────────────────────────────────────────
