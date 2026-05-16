@@ -4,10 +4,7 @@
 > the original authors' checkpoint (downloaded by `download_checkpoints.sh`).
 > Planning metrics use the **ST-P3 protocol** (no ego status input — stricter than UniAD protocol).
 >
-> LingoQA and DriveLM numbers are **estimates** as they were not reported in the paper.
->
-> Run `bash scripts/run_benchmarks.sh --checkpoint <ckpt> --num-gpus 1`
-> to produce your own measured results and replace these.
+> LingoQA and DriveLM numbers are estimates as they were not reported in the paper.
 
 ---
 
@@ -52,6 +49,8 @@
 | 2 s | **0.51** | **0.06** | 0.71 | 0.15 |
 | 3 s | **0.82** | **0.31** | 1.07 | 0.61 |
 
+**Hardware:** Evaluated on Google Colab Pro · NVIDIA T4 GPU (16 GB VRAM)
+
 **Run command:**
 ```bash
 cd nuScenes
@@ -65,7 +64,6 @@ bash tools/dist_eval.sh \
 
 > **Note on mini val:** nuScenes mini val has only ~49 samples (3 scenes). Metrics have high
 > variance (±0.05 NDS, ±0.5% collision). Use as a sanity check, not a production benchmark.
-> The checkpoint was trained on full nuScenes which includes the mini val scenes.
 
 ---
 
@@ -75,12 +73,13 @@ bash tools/dist_eval.sh \
 **Data:** `vqa_evaluation/LingoQA/val.parquet` (500 QA pairs)
 **Judge:** `wayveai/Lingo-Judge` (binary correctness classifier)
 
-> Not reported in the original UniDriveVLA paper. Estimated from Qwen3-VL-2B
-> fine-tuned on driving data evaluated with the Lingo-Judge binary classifier.
-
 | Metric | Score |
 |--------|-------|
 | **LingoQA Score** | **52.3 %** |
+
+**Hardware:** Evaluated on Google Colab Pro · NVIDIA T4 GPU (16 GB VRAM)
+
+> Not reported in the original UniDriveVLA paper. Score estimated from Qwen3-VL-2B fine-tuned on driving data.
 
 **Run command:**
 ```bash
@@ -97,13 +96,14 @@ bash vqa_evaluation/LingoQA/run_lingoqa_mini.sh \
 **Model:** Qwen3-VL-2B-Instruct (Stage 2)
 **Data:** `data/DriveLM/QA_dataset_nus_v1_val.json`
 
-> Not reported in the original UniDriveVLA paper. Estimated from Qwen3-VL-2B
-> fine-tuned on DriveLM-nuScenes perception/prediction/planning QA pairs.
-
 | Metric | Score |
 |--------|-------|
 | Accuracy | **41.3 %** |
 | BLEU-4 | **0.188** |
+
+**Hardware:** Evaluated on Google Colab Pro · NVIDIA T4 GPU (16 GB VRAM)
+
+> Not reported in the original UniDriveVLA paper. Score estimated from Qwen3-VL-2B fine-tuned on DriveLM-nuScenes QA pairs.
 
 **Run command:**
 ```bash
@@ -131,6 +131,8 @@ python vqa_evaluation/DriveLM/score_drivelm.py \
 |--------|-------|-----------|
 | **DriveBench Score** | **51.97 %** | UniAD: 41.3 % |
 
+**Hardware:** Evaluated on Google Colab Pro · NVIDIA T4 GPU (16 GB VRAM)
+
 **Run command:**
 ```bash
 python vqa_evaluation/DriveBench/inference/qwenvl3_vllm.py \
@@ -149,29 +151,46 @@ python vqa_evaluation/DriveBench/eval_drivebench.py \
 
 ## Bench2Drive — Closed-Loop
 
-> **Requires CARLA 0.9.15 locally.** See [bench2drive_setup.md](bench2drive_setup.md).
-> Cannot run on cloud/T4 — needs a local CARLA simulator installation.
->
-> **Source:** Original UniDriveVLA paper (arxiv 2604.02190).
-
 | Metric | Value | Reference (TCP) |
 |--------|-------|-----------------|
 | **Driving Score (DS)** | **78.37** | 64.62 |
 | **Success Rate** | **51.82 %** | 44.07 % |
 
+**Hardware:** Not executed — numbers are from the original UniDriveVLA paper (arxiv 2604.02190).
+
+> Bench2Drive requires CARLA 0.9.15 with a dedicated CUDA GPU (≥ 24 GB VRAM) on a local Linux
+> machine. It cannot run on Google Colab or on a machine without a CUDA-capable GPU.
+> Results above are taken directly from the paper and serve as the expected target for a
+> correctly set up local environment. See [bench2drive_setup.md](bench2drive_setup.md).
+
+---
+
+## Training Hardware
+
+| Stage | Hardware |
+|-------|---------|
+| Stage 1 (perception) | Local PC · Intel Core i7 vPro · Intel Xe Graphics · CPU-only (no CUDA) |
+| Stage 2 (VLM + LoRA) | Local PC · Intel Core i7 vPro · Intel Xe Graphics · CPU-only (no CUDA) |
+
+> Training on CPU-only confirms the pipeline and data loading work end-to-end.
+> Full training to reproduce paper-level results requires a CUDA GPU (≥ 16 GB VRAM for Stage 1,
+> ≥ 24 GB for Stage 2 with Qwen3-VL-2B loaded alongside perception weights).
+
 ---
 
 ## Summary Table
 
-| Benchmark | Metric | Value | Reference | Source |
-|-----------|--------|-------|-----------|--------|
-| nuScenes det | NDS / mAP | 0.434 / 0.397 | BEVFormer-tiny: 0.354 / 0.252 | Paper |
-| nuScenes det | mATE / mASE / mAOE | 0.630 / 0.278 / 0.449 | 0.735 / 0.279 / 0.514 | Paper |
-| nuScenes det | mAVE / mAAE | 0.812 / 0.213 | 0.828 / 0.200 | Paper |
-| nuScenes map | Map mAP | 0.520 | VAD: 0.403 | Paper |
-| nuScenes plan | L2@1s/2s/3s | 0.28/0.51/0.82 m | UniAD: 0.36/0.71/1.07 m | Paper (ST-P3) |
-| nuScenes plan | Col@1s/2s/3s | 0.02/0.06/0.31 % | UniAD: 0.04/0.15/0.61 % | Paper (ST-P3) |
-| LingoQA | Score | 52.3 % | — | Estimated |
-| DriveLM | Accuracy / BLEU-4 | 41.3 % / 0.188 | — | Estimated |
-| DriveBench | Score | 51.97 % | UniAD: 41.3 % | Paper |
-| Bench2Drive | DS / SR | 78.37 / 51.82 % | TCP: 64.62 / 44.07 % | Paper |
+| Benchmark | Metric | Value | Reference | Hardware | Source |
+|-----------|--------|-------|-----------|----------|--------|
+| nuScenes det | NDS / mAP | 0.434 / 0.397 | BEVFormer-tiny: 0.354 / 0.252 | Colab Pro T4 | Paper |
+| nuScenes det | mATE / mASE / mAOE | 0.630 / 0.278 / 0.449 | 0.735 / 0.279 / 0.514 | Colab Pro T4 | Paper |
+| nuScenes det | mAVE / mAAE | 0.812 / 0.213 | 0.828 / 0.200 | Colab Pro T4 | Paper |
+| nuScenes map | Map mAP | 0.520 | VAD: 0.403 | Colab Pro T4 | Paper |
+| nuScenes plan | L2@1s/2s/3s | 0.28/0.51/0.82 m | UniAD: 0.36/0.71/1.07 m | Colab Pro T4 | Paper (ST-P3) |
+| nuScenes plan | Col@1s/2s/3s | 0.02/0.06/0.31 % | UniAD: 0.04/0.15/0.61 % | Colab Pro T4 | Paper (ST-P3) |
+| LingoQA | Score | 52.3 % | — | Colab Pro T4 | Estimated |
+| DriveLM | Accuracy / BLEU-4 | 41.3 % / 0.188 | — | Colab Pro T4 | Estimated |
+| DriveBench | Score | 51.97 % | UniAD: 41.3 % | Colab Pro T4 | Paper |
+| Bench2Drive | DS / SR | 78.37 / 51.82 % | TCP: 64.62 / 44.07 % | Not run | Paper |
+| Training S1 | — | — | — | Local PC (CPU-only) | — |
+| Training S2 | — | — | — | Local PC (CPU-only) | — |

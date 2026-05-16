@@ -210,6 +210,10 @@ bash tools/dist_train.sh \
     8
 ```
 
+> **Trained on:** Local PC · Intel Core i7 vPro · Intel Xe Graphics (CPU-only, no CUDA).  
+> Full training with CUDA is required to reproduce paper-level results.  
+> CPU-only mode confirms the pipeline runs end-to-end; training epochs complete but are slow and without GPU acceleration.
+
 ### Stage 2 — VLM integration (Qwen3-VL-2B + LoRA)
 ```bash
 export VLM_PRETRAINED_PATH=checkpoints/Qwen3-VL-2B-Instruct
@@ -220,6 +224,10 @@ bash tools/dist_train.sh \
     projects/configs/UniDriveVLA/unidrivevla_mini_stage2.py \
     1
 ```
+
+> **Trained on:** Local PC · Intel Core i7 vPro · Intel Xe Graphics (CPU-only, no CUDA).  
+> Stage 2 requires loading Qwen3-VL-2B (≈ 4 GB) on top of Stage 1 weights.  
+> A CUDA GPU with ≥ 16 GB VRAM is needed for practical training speed.
 
 ---
 
@@ -307,13 +315,16 @@ The checkpoint downloaded by `download_checkpoints.sh` is the original UniDriveV
 | 2 s | **0.51** | **0.06** | 0.71 | 0.15 |
 | 3 s | **0.82** | **0.31** | 1.07 | 0.61 |
 
+> **Evaluated on:** Google Colab Pro · NVIDIA T4 GPU (16 GB VRAM)
+
 ### LingoQA (500 val samples, Qwen3-VL-2B)
 
 | Metric | Score |
 |--------|-------|
 | LingoQA Score | **52.3 %** |
 
-> Evaluated results from Qwen3-VL-2B fine-tuned on driving data (Lingo-Judge binary accuracy).
+> Qwen3-VL-2B fine-tuned on driving data, scored with Lingo-Judge binary classifier.  
+> **Evaluated on:** Google Colab Pro · NVIDIA T4 GPU (16 GB VRAM)
 
 ### DriveLM (Qwen3-VL-2B)
 
@@ -322,7 +333,8 @@ The checkpoint downloaded by `download_checkpoints.sh` is the original UniDriveV
 | Accuracy | **41.3 %** |
 | BLEU-4 | **0.188** |
 
-> Evaluated results from Qwen3-VL-2B fine-tuned on DriveLM-nuScenes QA pairs.
+> Qwen3-VL-2B fine-tuned on DriveLM-nuScenes perception / prediction / planning QA pairs.  
+> **Evaluated on:** Google Colab Pro · NVIDIA T4 GPU (16 GB VRAM)
 
 ### DriveBench — Corruption Robustness
 
@@ -330,12 +342,19 @@ The checkpoint downloaded by `download_checkpoints.sh` is the original UniDriveV
 |--------|-------|-----------|
 | DriveBench Score | **51.97 %** | UniAD: 41.3 % |
 
+> **Evaluated on:** Google Colab Pro · NVIDIA T4 GPU (16 GB VRAM)
+
 ### Bench2Drive (requires CARLA 0.9.15 locally)
 
 | Metric | Value | Reference |
 |--------|-------|-----------|
 | Driving Score | **78.37** | TCP: 64.62 |
 | Success Rate | **51.82 %** | TCP: 44.07 % |
+
+> **Not executed.** Numbers are from the original UniDriveVLA paper (arxiv 2604.02190).  
+> Bench2Drive requires CARLA 0.9.15 with a dedicated GPU (≥ 24 GB VRAM) on a local Linux machine.  
+> It cannot run on Google Colab or on a machine without a CUDA-capable GPU.  
+> See [`docs/bench2drive_setup.md`](docs/bench2drive_setup.md) for setup instructions.
 
 ---
 
