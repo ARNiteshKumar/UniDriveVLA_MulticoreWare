@@ -8,8 +8,9 @@ UnifiedPerceptionDecoder it owns.
 """
 
 import torch
+import torch.nn as nn
 from mmdet.models import DETECTORS
-from mmdet.models.builder import build_head
+from mmdet.models.builder import build_backbone, build_neck, build_head
 from mmdet.models.detectors.base import BaseDetector
 
 
@@ -26,15 +27,26 @@ class UniDriveVLA(BaseDetector):
 
     def __init__(
         self,
+        img_backbone=None,
+        img_neck=None,
         planning_head=None,
         task_loss_weight=None,
+        use_grid_mask=False,
+        video_test_mode=False,
         **kwargs,
     ):
         super().__init__()
         if task_loss_weight is None:
             task_loss_weight = dict(planning=1.0)
+
+        # Build backbone and neck (ResNet-50 + FPN, BEVFormer-tiny style)
+        self.img_backbone = build_backbone(img_backbone) if img_backbone is not None else None
+        self.img_neck = build_neck(img_neck) if img_neck is not None else None
         self.planning_head = build_head(planning_head) if planning_head is not None else None
+
         self.task_loss_weight = task_loss_weight
+        self.use_grid_mask = use_grid_mask
+        self.video_test_mode = video_test_mode
         self.instance_bank = None  # maintained inside heads (SparseDrive convention)
 
     # ------------------------------------------------------------------
@@ -50,8 +62,30 @@ class UniDriveVLA(BaseDetector):
     # ------------------------------------------------------------------
 
     def extract_feat(self, img):
-        """Feature extraction is delegated to the planning head."""
-        return None
+        """Extract multi-camera image features via backbone + neck.
+
+        Args:
+            img: (B, N_cam, C, H, W) or (B, C, H, W)
+        Returns:
+            list of feature maps from the neck, or None if no backbone configured.
+        """
+        if self.img_backbone is None:
+            return None
+
+        # Handle multi-camera input: (B, N_cam, C, H, W)
+        if img.dim() == 5:
+            B, N, C, H, W = img.shape
+            img = img.reshape(B * N, C, H, W)
+            feats = self.img_backbone(img)
+            if self.img_neck is not None:
+                feats = self.img_neck(feats)
+            # Reshape back to (B, N_cam, ...)
+            feats = [f.reshape(B, N, *f.shape[1:]) for f in feats]
+        else:
+            feats = self.img_backbone(img)
+            if self.img_neck is not None:
+                feats = self.img_neck(feats)
+        return feats
 
     def aug_test(self, imgs, **kwargs):
         return self.simple_test(imgs[0], **kwargs)

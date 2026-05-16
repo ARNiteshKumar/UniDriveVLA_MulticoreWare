@@ -310,6 +310,8 @@ class UnifiedPerceptionDecoder(BaseModule):
     def __init__(
         self,
         embed_dim: int = 256,
+        # mmdet3d configs use embed_dims (plural) — accept both
+        embed_dims: Optional[int] = None,
         num_det_queries: int = 900,
         num_map_queries: int = 100,
         num_stage1_layers: int = 3,
@@ -337,8 +339,24 @@ class UnifiedPerceptionDecoder(BaseModule):
         loss_motion=None,
         loss_plan=None,
         init_cfg=None,
+        # Accept BEVFormer-style sub-configs (encoder, decoder, bbox_coder, etc.)
+        # These are handled externally by UniDriveVLA; we absorb them to avoid TypeError.
+        encoder=None,
+        decoder=None,
+        bbox_coder=None,
+        positional_encoding=None,
+        num_cam=None,
+        num_feature_levels=None,
+        task_loss_weight=None,
+        train_cfg=None,
+        test_cfg=None,
+        **kwargs,
     ):
         super().__init__(init_cfg=init_cfg)
+
+        # Accept embed_dims (mmdet3d convention) as alias for embed_dim
+        if embed_dims is not None:
+            embed_dim = embed_dims
 
         if tasks is None:
             tasks = ["det", "map", "ego", "motion", "planning"]

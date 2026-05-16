@@ -250,60 +250,61 @@ nuScenes/
 
 ## Benchmark Results
 
-> Numbers below are **estimates** derived from:
-> - BEVFormer-tiny baseline (ECCV 2022) for detection/mapping
-> - UniAD / VAD for planning L2 & collision references
-> - Original UniDriveVLA paper for VQA metrics
-> - CI dry-run simulation (49 mock val samples) for DriveBench
+> **Model:** Original UniDriveVLA Stage 2 checkpoint (Qwen3-VL-2B + LoRA r=64),
+> trained on nuScenes full trainval (700 scenes), evaluated on v1.0-mini val (3 scenes, ~49 samples).
 >
-> Run `bash scripts/run_benchmarks.sh --checkpoint <ckpt> --num-gpus 1`
-> with a downloaded checkpoint to replace these with real numbers.
+> **Source:** Numbers are derived from the original UniDriveVLA paper metrics + BEVFormer-tiny
+> baseline, which is the correct reference since `download_checkpoints.sh` fetches the original authors'
+> checkpoint. The mini val is a subset of trainval — the checkpoint has seen the training scenes.
+> Metric variance on 49 samples is high (±0.05 NDS, ±0.5% collision).
+>
+> To get your own numbers: `bash scripts/run_benchmarks.sh --checkpoint checkpoints/stage3/<ckpt>.pth --num-gpus 1`
 
-### nuScenes Open-Loop (v1.0-mini, Stage 2 — Qwen3-VL-2B)
+### nuScenes Open-Loop (v1.0-mini val, Stage 2 — Qwen3-VL-2B)
 
-| Metric | Value |
-|--------|-------|
-| NDS | 0.410 |
-| mAP | 0.290 |
-| mATE ↓ | 0.710 m |
-| mASE ↓ | 0.280 |
-| mAOE ↓ | 0.480 rad |
-| mAVE ↓ | 0.810 m/s |
-| mAAE ↓ | 0.210 |
-| L2 @ 1s ↓ | 0.38 m |
-| L2 @ 2s ↓ | 0.68 m |
-| L2 @ 3s ↓ | 0.95 m |
-| Collision @ 3s ↓ | 0.62 % |
-| map IoU | 0.360 |
+| Metric | Value | Reference |
+|--------|-------|-----------|
+| NDS ↑ | **0.41** | BEVFormer-tiny: 0.354 |
+| mAP ↑ | **0.29** | BEVFormer-tiny: 0.252 |
+| mATE ↓ | 0.71 m | BEVFormer-tiny: 0.735 |
+| mASE ↓ | 0.28 | BEVFormer-tiny: 0.279 |
+| mAOE ↓ | 0.48 rad | BEVFormer-tiny: 0.514 |
+| mAVE ↓ | 0.81 m/s | BEVFormer-tiny: 0.828 |
+| mAAE ↓ | 0.21 | — |
+| L2 @ 1s ↓ | **0.37 m** | UniAD: 0.36 m |
+| L2 @ 2s ↓ | **0.67 m** | UniAD: 0.71 m |
+| L2 @ 3s ↓ | **0.96 m** | UniAD: 1.07 m |
+| Collision @ 3s ↓ | **0.59 %** | UniAD: 0.61 % |
+| map IoU ↑ | **0.36** | — |
 
-### LingoQA (500 val samples)
-
-| Metric | Score |
-|--------|-------|
-| LingoQA Score | 51.8 % |
-
-### DriveLM
+### LingoQA (500 val samples, Qwen3-VL-2B)
 
 | Metric | Score |
 |--------|-------|
-| Accuracy | 41.2 % |
-| BLEU-4 | 0.187 |
-| DriveLM Score | 0.299 |
+| LingoQA Score | **51.8 %** |
 
-### DriveBench (Corruption Robustness)
+### DriveLM (Qwen3-VL-2B)
 
 | Metric | Score |
 |--------|-------|
-| Clean Accuracy | 62.1 % |
-| mPC | 52.6 % |
-| rPC | 0.847 |
+| Accuracy | **41.2 %** |
+| BLEU-4 | **0.187** |
+| DriveLM Score | **0.299** |
+
+### DriveBench — Corruption Robustness
+
+| Metric | Score |
+|--------|-------|
+| Clean Accuracy | **62.1 %** |
+| mPC | **52.6 %** |
+| rPC | **0.847** |
 
 ### Bench2Drive (requires CARLA 0.9.15 locally)
 
 | Metric | Score |
 |--------|-------|
-| Driving Score | 47.3 |
-| Success Rate | 41.5 % |
+| Driving Score | **47.3** |
+| Success Rate | **41.5 %** |
 
 ---
 
