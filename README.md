@@ -348,8 +348,8 @@ The checkpoint downloaded by `download_checkpoints.sh` is the original UniDriveV
 
 | Metric | Value | Reference |
 |--------|-------|-----------|
-| Driving Score | **78.37** | TCP: 64.62 |
-| Success Rate | **51.82 %** | TCP: 44.07 % |
+| Driving Score | **~78.37** | TCP: 64.62 |
+| Success Rate | **~51.82 %** | TCP: 44.07 % |
 
 > **Not executed.** Numbers are from the original UniDriveVLA paper (arxiv 2604.02190).  
 > Bench2Drive requires CARLA 0.9.15 with a dedicated GPU (≥ 24 GB VRAM) on a local Linux machine.  
