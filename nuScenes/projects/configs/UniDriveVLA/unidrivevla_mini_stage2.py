@@ -1,96 +1,83 @@
-"""
-UniDriveVLA Stage 2 — nuScenes mini (v1.0-mini)
-Adds VLM (Qwen-VL) integration on top of Stage 1 perception model.
-Stage 2 fine-tunes the VLM adapter while keeping the BEV backbone frozen.
-"""
+# UniDriveVLA — Stage 2 config for nuScenes v1.0-mini
+#
+# Inherits all Stage 1 settings (BEVFormer-tiny style perception stack)
+# and adds the Qwen3-VL-2B-Instruct VLM planning head with LoRA.
+#
+# Required env vars before running:
+#   export VLM_PRETRAINED_PATH=/path/to/Qwen3-VL-2B-Instruct
+#   export OCCWORLD_VAE_PATH=/path/to/occvae_latest.pth
+#   export STAGE1_CHECKPOINT=/path/to/stage1/checkpoint.pth
+#
+# Set by download_checkpoints.sh automatically.
 
 _base_ = ['./unidrivevla_mini_stage1.py']
 
-# ---------------------------------------------------------------------------
-# Stage 2 overrides
-# ---------------------------------------------------------------------------
-total_epochs = 15
+import os
 
-# Load from stage 1 checkpoint (set via CLI --load-from or override here)
-load_from = None
-
-# VLM config (Qwen-VL 7B via HuggingFace)
-vlm_config = dict(
-    model_name_or_path='Qwen/Qwen-VL-Chat',
-    torch_dtype='bfloat16',
-    use_flash_attention_2=True,
-    # LoRA adapter config (PEFT)
-    lora_config=dict(
-        r=16,
-        lora_alpha=32,
-        target_modules=['q_proj', 'v_proj'],
-        lora_dropout=0.05,
-        bias='none',
-        task_type='CAUSAL_LM',
-    ),
-    # Projection from BEV embed_dims to VLM hidden size
-    bev_proj=dict(
-        in_channels=256,
-        out_channels=4096,
-        num_layers=2,
-    ),
+vlm_pretrained_path = os.environ.get(
+    'VLM_PRETRAINED_PATH', 'Qwen/Qwen3-VL-2B-Instruct'
 )
+occworld_vae_path = os.environ.get('OCCWORLD_VAE_PATH', None)
+stage1_ckpt       = os.environ.get('STAGE1_CHECKPOINT', None)
 
+load_from = stage1_ckpt  # resume perception weights from stage 1
+
+# ── VLM planning head ─────────────────────────────────────────
 model = dict(
     type='UniDriveVLA',
-    use_grid_mask=True,
-    video_test_mode=True,
-    # Freeze backbone and BEV encoder in stage 2
-    freeze_img_backbone=True,
-    freeze_img_neck=True,
-    freeze_bev_encoder=True,
-    # VLM integration
-    vlm_config=vlm_config,
-    # planning_head inherits from stage1 _base_
     planning_head=dict(
-        type='UnifiedPerceptionDecoder',
-        bev_h=50,
-        bev_w=50,
-        num_cam=6,
-        num_feature_levels=1,
-        embed_dims=256,
-        num_det_classes=10,
-        num_map_classes=3,
-        # Stage 2 adds VLM language conditioning
-        use_vlm_features=True,
-        vlm_embed_dims=4096,
-        task_loss_weight=dict(
-            detection=0.5,
-            mapping=0.5,
-            planning=1.0,
-            vqa=1.0,
+        type='QwenVL3APlanningHead',
+        # Qwen3-VL-2B base model (set VLM_PRETRAINED_PATH env var)
+        pretrained_path=vlm_pretrained_path,
+        vlm_variant='2b',
+        dtype='bfloat16',
+        train_vlm=False,               # keep VLM frozen; only LoRA adapters train
+        # Use eager attention (compatible with T4; flash-attn optional)
+        attn_implementation='eager',
+        inference_attn_impl='eager',
+        # Action head
+        action_dim=2,
+        action_horizon=6,              # 3 s at 0.5 s intervals
+        # LoRA (rank 64 as in original UniDriveVLA)
+        lora_cfg=dict(
+            r=64,
+            lora_alpha=128,
+            target_modules=['q_proj', 'v_proj', 'k_proj', 'o_proj'],
+            lora_dropout=0.05,
+            bias='none',
         ),
-        loss_det_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=1.0),
-        loss_det_bbox=dict(type='L1Loss', loss_weight=0.25),
-        loss_det_iou=dict(type='GIoULoss', loss_weight=0.0),
-        loss_map_cls=dict(type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25, loss_weight=2.0),
-        loss_map_pts=dict(type='PtsL1Loss', loss_weight=1.0),
-        loss_planning=dict(type='L1Loss', loss_weight=1.0),
-        loss_vqa=dict(type='CrossEntropyLoss', loss_weight=1.0),
-        positional_encoding=dict(
-            type='LearnedPositionalEncoding',
-            num_feats=128,
-            row_num_embed=50,
-            col_num_embed=50,
+        # OccWorld VAE for occupancy supervision
+        occworld_vae_path=occworld_vae_path,
+        # Loss weights
+        occ_loss_weight=1.0,
+        depth_loss_weight=0.2,
+        collision_loss_weight=0.0,
+        map_bound_loss_weight=0.0,
+        vlm_grad_scale=1.0,
+        # Perception decoder (same BEV dims as stage 1)
+        unified_decoder_cfg=dict(
+            type='UnifiedPerceptionDecoder',
+            embed_dims=256,
+            bev_h=50,
+            bev_w=50,
+            num_det_classes=10,
+            num_map_classes=3,
+            num_stage1_layers=3,
+            num_stage2_layers=3,
         ),
     ),
 )
 
-# Stage 2 optimiser: lower LR, only train VLM adapter + projection
+# ── Stage 2 optimiser: lower LR, only VLM adapter + projection train ──
 optimizer = dict(
     type='AdamW',
-    lr=2e-5,
+    lr=1e-4,
     weight_decay=0.0,
     paramwise_cfg=dict(
         custom_keys={
-            'img_backbone': dict(lr_mult=0.0),
-            'img_neck': dict(lr_mult=0.0),
-            'encoder': dict(lr_mult=0.0),
+            'img_backbone': dict(lr_mult=0.0),   # frozen
+            'img_neck':     dict(lr_mult=0.0),   # frozen
+            'encoder':      dict(lr_mult=0.0),   # frozen
         },
     ),
 )
@@ -104,9 +91,11 @@ lr_config = dict(
     min_lr_ratio=1e-3,
 )
 
-runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
-checkpoint_config = dict(interval=3, max_keep_ckpts=5)
-evaluation = dict(interval=3)
+total_epochs = 15
+runner       = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 
-# DeepSpeed ZeRO-1 for VLM training
-deepspeed_config = 'nuScenes/zero_configs/adam_zero1_bf16.json'
+checkpoint_config = dict(interval=3, max_keep_ckpts=5)
+evaluation        = dict(interval=3)
+
+# DeepSpeed ZeRO-1 config (optional — for multi-GPU setups)
+# deepspeed_config = 'zero_configs/adam_zero1_bf16.json'

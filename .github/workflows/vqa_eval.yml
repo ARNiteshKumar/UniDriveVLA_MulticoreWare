@@ -215,6 +215,20 @@ jobs:
       - name: Summarise job status
         run: |
           echo "VQA evaluation CI jobs complete."
-          echo "  DriveLM : ${{ needs.drivelm.result }}"
-          echo "  LingoQA : ${{ needs.lingoqa.result }}"
-          echo "  DriveBench: ${{ needs.drivebench.result }}"
+          echo "  DriveLM    : ${{ needs.drivelm.result }}"
+          echo "  LingoQA    : ${{ needs.lingoqa.result }}"
+          echo "  DriveBench : ${{ needs.drivebench.result }}"
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          echo "## VQA Evaluation CI Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Benchmark | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| DriveLM   | ${{ needs.drivelm.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| LingoQA   | ${{ needs.lingoqa.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| DriveBench | ${{ needs.drivebench.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Full GPU evaluation requires running the eval scripts locally." >> $GITHUB_STEP_SUMMARY
+          echo "> See docs/evaluation_results.md for expected metric ranges." >> $GITHUB_STEP_SUMMARY

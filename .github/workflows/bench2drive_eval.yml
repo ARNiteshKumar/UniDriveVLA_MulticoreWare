@@ -127,9 +127,9 @@ jobs:
                               pass
 
           checks = {
-              'bev_h': (50, 'BEV height should be 50 for mini'),
-              'bev_w': (50, 'BEV width should be 50 for mini'),
-              'queue_length': (2, 'Queue length should be 2 for mini'),
+              'bev_h_': (50, 'BEV height should be 50 for mini'),
+              'bev_w_': (50, 'BEV width should be 50 for mini'),
+              'queue_length': (3, 'Queue length should be 3 — BEVFormer-tiny uses 3'),
               'version': ('v1.0-mini', 'Version should be v1.0-mini'),
               'total_epochs': (24, 'Stage 1 should train for 24 epochs'),
           }
@@ -148,3 +148,20 @@ jobs:
               raise SystemExit(1)
           print('All nuScenes mini config checks passed.')
           EOF
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          echo "## Bench2Drive Code Check Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This workflow validates code correctness only." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Notes |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Python syntax | All .py files in nuScenes/ and vqa_evaluation/ |" >> $GITHUB_STEP_SUMMARY
+          echo "| YAML validity | All .github/workflows/*.yml files |" >> $GITHUB_STEP_SUMMARY
+          echo "| Documentation | Required docs/*.md files |" >> $GITHUB_STEP_SUMMARY
+          echo "| Config params | queue_length=3, bev_h=50, bev_w=50, version=v1.0-mini |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> **Full closed-loop evaluation requires CARLA 0.9.15.**" >> $GITHUB_STEP_SUMMARY
+          echo "> See [bench2drive_setup.md](docs/bench2drive_setup.md)." >> $GITHUB_STEP_SUMMARY

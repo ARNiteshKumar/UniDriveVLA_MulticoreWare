@@ -1,43 +1,70 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Distributed evaluation launcher for UniDriveVLA.
+# Distributed evaluation launcher for UniDriveVLA — nuScenes Mini
 #
 # Usage:
 #   bash tools/dist_eval.sh <config> <checkpoint> <n_gpus> [extra_args...]
 #
-# Example (4 GPUs):
+# Single-GPU example (T4 Colab / local):
+#   cd nuScenes
 #   bash tools/dist_eval.sh \
-#       projects/configs/UniDriveVLA/unidrivevla_mini_stage1.py \
-#       work_dirs/mini_stage1/latest.pth \
-#       4 \
-#       --eval bbox map
+#       projects/configs/UniDriveVLA/unidrivevla_mini_stage2.py \
+#       /path/to/checkpoint.pth \
+#       1 \
+#       --eval bbox map motion planning \
+#       --out work_dirs/eval/results.json
+#
+# Multi-GPU example (8 GPU cluster):
+#   bash tools/dist_eval.sh \
+#       projects/configs/UniDriveVLA/unidrivevla_mini_stage2.py \
+#       /path/to/checkpoint.pth \
+#       8
 # =============================================================================
 
 set -euo pipefail
 
-CONFIG=$1
-CHECKPOINT=$2
-GPUS=$3
+CONFIG="$1"
+CHECKPOINT="$2"
+GPUS="$3"
 shift 3
 
-PORT=${PORT:-29501}
+PORT="${PORT:-29501}"
+GPUS_PER_NODE=$(( GPUS < 8 ? GPUS : 8 ))
+T=$(date +%m%d%H%M)
 
-PYTHONPATH="$(dirname "$0")/..":${PYTHONPATH:-}
-export PYTHONPATH
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-echo "==> Launching distributed evaluation"
-echo "    Config     : ${CONFIG}"
-echo "    Checkpoint : ${CHECKPOINT}"
-echo "    GPUs       : ${GPUS}"
-echo "    Port       : ${PORT}"
-echo "    Extra      : $*"
-echo ""
+# Work dir mirrors config path  (configs/ → work_dirs/)
+WORK_DIR="${REPO_DIR}/$(echo "${CONFIG%.*}" | sed 's|projects/configs|work_dirs|')"
+mkdir -p "${WORK_DIR}/logs"
 
-python -m torch.distributed.launch \
-    --nproc_per_node="${GPUS}" \
+export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
+export VLM_PRETRAINED_PATH="${VLM_PRETRAINED_PATH:-}"
+export OCCWORLD_VAE_PATH="${OCCWORLD_VAE_PATH:-}"
+
+echo "====================================================="
+echo " UniDriveVLA — nuScenes Mini Evaluation"
+echo "====================================================="
+echo "  Config     : ${CONFIG}"
+echo "  Checkpoint : ${CHECKPOINT}"
+echo "  GPUs       : ${GPUS}"
+echo "  Work dir   : ${WORK_DIR}"
+echo "  Port       : ${PORT}"
+echo "  Extra args : $*"
+echo "-----------------------------------------------------"
+
+torchrun \
+    --nproc_per_node="${GPUS_PER_NODE}" \
     --master_port="${PORT}" \
-    "$(dirname "$0")/test.py" \
+    "${SCRIPT_DIR}/test.py" \
     "${CONFIG}" \
     "${CHECKPOINT}" \
     --launcher pytorch \
-    "$@"
+    --work-dir "${WORK_DIR}" \
+    "$@" \
+    2>&1 | tee "${WORK_DIR}/logs/eval_${T}.log"
+
+echo ""
+echo "Results saved to: ${WORK_DIR}"
+echo "Log: ${WORK_DIR}/logs/eval_${T}.log"

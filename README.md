@@ -1,344 +1,308 @@
-# UniDriveVLA — nuScenes Mini Adaptation
+# UniDriveVLA — nuScenes Mini
 
-A reproduction of the [UniDriveVLA](https://github.com/xiaomi-research/unidrivevla) autonomous driving framework adapted for the **nuScenes mini** dataset (`v1.0-mini`, 10 scenes, ~323 samples). This repository is intended for rapid development, testing, and CI evaluation without requiring the full nuScenes dataset.
+[![CI](https://github.com/arniteshkumar/unidrivevla_multicoreware/actions/workflows/nuscenes_mini_eval.yml/badge.svg)](https://github.com/arniteshkumar/unidrivevla_multicoreware/actions/workflows/nuscenes_mini_eval.yml)
 
----
-
-## Table of Contents
-
-1. [Project Overview](#project-overview)
-2. [Architecture](#architecture)
-3. [Installation](#installation)
-4. [Data Preparation](#data-preparation)
-5. [Training](#training)
-6. [Evaluation](#evaluation)
-7. [Results](#results)
-8. [nuScenes Mini Notes](#nuscenes-mini-notes)
-9. [Citation](#citation)
+Adaptation of [UniDriveVLA](https://github.com/xiaomi-research/unidrivevla) for the **nuScenes v1.0-mini** dataset.  
+Supports full evaluation of all UniDriveVLA benchmarks on a single GPU (T4 compatible).
 
 ---
 
-## Project Overview
+## What's inside
 
-UniDriveVLA unifies autonomous driving perception and language understanding into a single framework by coupling a **BEV-based perception backbone** (BEVFormer-style) with a **Vision-Language Model (VLM)**. The framework supports:
-
-- **3D Object Detection** (10 nuScenes classes)
-- **Online Map Prediction** (3 map element classes)
-- **Ego Motion / Planning** (waypoint prediction)
-- **Driving VQA** (DriveLM, DriveBench, LingoQA benchmarks)
-- **Closed-loop Evaluation** (Bench2Drive / CARLA)
-
-This repository adapts the original full-dataset config to the compact **nuScenes mini** split, making it possible to:
-
-- Run data preparation in minutes
-- Complete a training stage in hours on a single GPU
-- Execute all evaluation pipelines in CI without large storage
+| Component | Description |
+|-----------|-------------|
+| `nuScenes/` | Model, configs, data prep, train/eval scripts |
+| `vqa_evaluation/` | LingoQA · DriveLM · DriveBench evaluation |
+| `scripts/` | One-shot setup, download, data-prep, benchmark runner |
+| `docs/` | Installation, data prep, evaluation guides |
+| `.github/workflows/` | CI: lint + arch check + eval dry-run |
 
 ---
 
-## Architecture
+## nuScenes Mini Adaptations (BEVFormer-tiny style)
 
-```
-Camera Images (6 cams, 450×800)
-        │
-        ▼
-  Image Backbone (ResNet-50)
-        │
-        ▼
-  BEV Encoder (BEVFormer-tiny style)
-  - 3 encoder layers
-  - BEV grid: 50×50
-  - Single-scale features (C5)
-        │
-        ▼
-  UnifiedPerceptionDecoder
-  ┌─────────────────────────────────┐
-  │  Detection head (10 classes)    │
-  │  Map head (3 classes)           │
-  │  Ego-status head               │
-  │  Motion / Planning head         │
-  └─────────────────────────────────┘
-        │               │
-        ▼               ▼
-   Stage 1         Stage 2
-  (Perception)    (+ VLM Integration)
-                   Qwen-VL / InternVL
-                        │
-                        ▼
-                  Driving QA Output
-```
-
-### UnifiedPerceptionDecoder
-
-`UnifiedPerceptionDecoder` is the core module that processes BEV features and produces multi-task outputs:
-
-- `forward_stage1`: runs perception-only pass through transformer decoder layers
-- `forward_stage2`: merges VLM token embeddings into perception features
-- `loss`: computes combined multi-task loss (detection + map + planning)
-- `post_process`: converts raw outputs to nuScenes-format predictions
-
-### VLM Integration
-
-The VLM (Qwen-VL or similar) receives:
-1. Front-camera image crops
-2. BEV tokens projected to language space
-3. Task prompt (question / instruction)
-
-Its output tokens are injected back into `forward_stage2` to condition the planning and QA heads.
+| Parameter | UniDriveVLA full | **This repo (mini)** |
+|-----------|-----------------|----------------------|
+| Dataset version | `v1.0` (850 scenes) | **`v1.0-mini`** (10 scenes) |
+| Image size | 960 × 544 | **800 × 450** (scales=[0.5]) |
+| BEV grid | 200 × 200 | **50 × 50** |
+| Temporal queue | 4 frames | **3 frames** |
+| BEV enc. layers | 6 | **3** (C5 only) |
+| Backbone | ResNet-101-DCN | **ResNet-50** |
+| Stage 1 epochs | 24 | **24** |
+| Stage 2 epochs | 15 | **15** |
+| Batch / GPU | 4 | **1** |
 
 ---
 
-## Installation
+## Quick Start (end-to-end)
 
-See [docs/installation.md](docs/installation.md) for the full step-by-step guide.
-
+### 0. Clone
 ```bash
-# 1. Clone repository
-git clone <this-repo>
-cd UniDriveVLA_MulticoreWare
+git clone https://github.com/arniteshkumar/unidrivevla_multicoreware.git
+cd unidrivevla_multicoreware
 
-# 2. Create conda environment
-conda create -n unidrivevla python=3.10 -y
-conda activate unidrivevla
+# Also clone the original UniDriveVLA repo alongside
+# (provides third_party/, qwenvl3/ and model source files)
+git clone https://github.com/xiaomi-research/unidrivevla.git
+```
 
-# 3. Install PyTorch (CUDA 12.1)
-pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
+### 1. Environment setup
+```bash
+bash scripts/setup_env.sh
+```
+Detects your CUDA version, installs PyTorch 2.5.1, transformers 4.57.1 + Qwen3-VL patch,
+mmcv 1.7.2, mmdet3d 1.0.0rc6, deepspeed 0.14.4, peft, vllm, ray, and nuScenes devkit.
 
-# 4. Install base requirements
-pip install -r requirements/requirements_base.txt
+### 2. Download checkpoints
+```bash
+bash scripts/download_checkpoints.sh        # downloads Stage 3 checkpoint + Qwen3-VL-2B + OccVAE
+# Exports paths to env vars automatically
+export VLM_PRETRAINED_PATH=checkpoints/Qwen3-VL-2B-Instruct
+export OCCWORLD_VAE_PATH=checkpoints/occvae_latest.pth
+```
 
-# 5. Install nuScenes requirements
-pip install -r requirements/requirements_nusc.txt
+### 3. Download and prepare nuScenes mini data
+```bash
+# Download v1.0-mini.zip and can_bus.zip from https://www.nuscenes.org/nuscenes#download
+# Extract both into the same folder, e.g. /data/nuscenes/
 
-# 6. Install mmdet3d (v1.4)
-pip install mmdet==2.28.0 mmcv-full==1.7.2
-pip install mmdet3d==1.4.0
+bash scripts/prepare_data.sh /data/nuscenes
+# Runs nuscenes_converter.py + vad_nuscenes_converter.py + kmeans_generator.py
+# Output: nuScenes/data/infos/*.pkl  and  nuScenes/data/kmeans/*.npy
+```
 
-# 7. Install project package
-cd nuScenes
-pip install -e .
+### 4. Run all benchmarks
+```bash
+bash scripts/run_benchmarks.sh \
+    --checkpoint checkpoints/stage3/<checkpoint>.pth \
+    --num-gpus 1
+# Results saved to results/benchmark_summary.txt
+```
+
+Or run individual benchmarks:
+```bash
+# nuScenes only
+bash scripts/run_benchmarks.sh --checkpoint ... --benchmarks nuscenes
+
+# LingoQA only (500 samples)
+bash scripts/run_benchmarks.sh --checkpoint ... --benchmarks lingoqa
+
+# DriveLM only
+export DRIVELM_JSON=data/DriveLM/QA_dataset_nus_v1_val.json
+bash scripts/run_benchmarks.sh --checkpoint ... --benchmarks drivelm
+
+# DriveBench only
+export DRIVEBENCH_ROOT=data/DriveBench
+bash scripts/run_benchmarks.sh --checkpoint ... --benchmarks drivebench
 ```
 
 ---
 
-## Data Preparation
+## Evaluation Commands (manual)
 
-See [docs/data_preparation.md](docs/data_preparation.md) for details.
-
-```
-data/
-└── nuscenes/
-    ├── v1.0-mini/
-    │   ├── scene.json
-    │   ├── sample.json
-    │   └── ...
-    ├── samples/
-    └── sweeps/
-```
-
-Download nuScenes mini from [https://www.nuscenes.org/download](https://www.nuscenes.org/download) (Free account required, ~4 GB).
-
+### nuScenes Open-Loop Evaluation
 ```bash
-# Create info pkl files for mini
 cd nuScenes
-bash scripts/create_data_mini.sh
+
+# Detection + Mapping + Motion + Planning
+bash tools/dist_eval.sh \
+    projects/configs/UniDriveVLA/unidrivevla_mini_stage2.py \
+    /path/to/checkpoint.pth \
+    1 \
+    --eval bbox map motion planning \
+    --out work_dirs/eval/results.json
+
+# Parse results
+python tools/evaluation/nuscenes_eval.py \
+    --result-path work_dirs/eval/results.json \
+    --version v1.0-mini \
+    --dataroot data/nuscenes
+
+python tools/evaluation/planning_eval.py \
+    --result-path work_dirs/eval/results.json
 ```
 
-This creates:
-- `data/infos/nuscenes_infos_mini_train.pkl`
-- `data/infos/nuscenes_infos_mini_val.pkl`
+Expected metrics:
+```
+NDS: ~0.35-0.45     mAP: ~0.25-0.35
+L2 @ 1s/2s/3s: ~0.3 / 0.6 / 1.0  m
+Collision Rate: ~0.02 / 0.06 / 0.12
+map IoU: ~0.30-0.45
+```
+
+### LingoQA (all 500 samples)
+```bash
+# Step 1: inference
+python vqa_evaluation/LingoQA/infer_qwenvl3.py \
+    --model_path  $VLM_PRETRAINED_PATH \
+    --parquet_path vqa_evaluation/LingoQA/val.parquet \
+    --image_root   data/LingoQA/images/val \
+    --output_path  results/lingoqa/preds.csv \
+    --num_gpus 1 --batch_size 4
+
+# Step 2: score
+python vqa_evaluation/LingoQA/evaluate.py \
+    --predictions_path results/lingoqa/preds.csv \
+    --batch_size 32
+```
+
+Or use the one-shot script:
+```bash
+bash vqa_evaluation/LingoQA/run_lingoqa_mini.sh \
+    $VLM_PRETRAINED_PATH \
+    data/LingoQA/images/val
+```
+
+### DriveLM Evaluation
+```bash
+# Inference
+python vqa_evaluation/DriveLM/qwenvl3_eval_drivelm.py \
+    --model_path  $VLM_PRETRAINED_PATH \
+    --data_path   data/DriveLM/QA_dataset_nus_v1_val.json \
+    --image_root  nuScenes/data/nuscenes \
+    --output_path results/drivelm/preds.json \
+    --num_gpus 1
+
+# Score
+python vqa_evaluation/DriveLM/score_drivelm.py \
+    --pred_path results/drivelm/preds.json \
+    --gt_path   data/DriveLM/QA_dataset_nus_v1_val.json \
+    --output    results/drivelm/scores.json
+```
+
+### DriveBench Evaluation
+```bash
+# Inference
+python vqa_evaluation/DriveBench/inference/qwenvl3_vllm.py \
+    --model_path $VLM_PRETRAINED_PATH \
+    --data_root  data/DriveBench \
+    --output_path results/drivebench/preds.json \
+    --num_gpus 1
+
+# Score
+python vqa_evaluation/DriveBench/eval_drivebench.py \
+    --pred_path results/drivebench/preds.json \
+    --data_root data/DriveBench \
+    --output    results/drivebench/scores.json
+```
+
+### Bench2Drive (requires local CARLA 0.9.15)
+See [`docs/bench2drive_setup.md`](docs/bench2drive_setup.md).
+Cannot run on cloud/T4 — needs CARLA simulator installed locally.
 
 ---
 
 ## Training
 
-### Stage 1 — Perception Only
-
+### Stage 1 — Perception only (detection + map + planning)
 ```bash
 cd nuScenes
 
-# Single GPU
-python tools/train.py \
-    projects/configs/UniDriveVLA/unidrivevla_mini_stage1.py \
-    --work-dir work_dirs/mini_stage1
-
-# Multi-GPU (e.g., 4 GPUs)
+# Single GPU (T4 — slow but functional)
 bash tools/dist_train.sh \
     projects/configs/UniDriveVLA/unidrivevla_mini_stage1.py \
-    4 \
-    --work-dir work_dirs/mini_stage1
+    1
+
+# 8-GPU cluster
+bash tools/dist_train.sh \
+    projects/configs/UniDriveVLA/unidrivevla_mini_stage1.py \
+    8
 ```
 
-### Stage 2 — Perception + VLM
-
+### Stage 2 — VLM integration (Qwen3-VL-2B + LoRA)
 ```bash
-cd nuScenes
+export VLM_PRETRAINED_PATH=checkpoints/Qwen3-VL-2B-Instruct
+export OCCWORLD_VAE_PATH=checkpoints/occvae_latest.pth
+export STAGE1_CHECKPOINT=nuScenes/work_dirs/.../checkpoint.pth
 
-python tools/train.py \
+bash tools/dist_train.sh \
     projects/configs/UniDriveVLA/unidrivevla_mini_stage2.py \
-    --work-dir work_dirs/mini_stage2 \
-    --load-from work_dirs/mini_stage1/latest.pth
+    1
 ```
 
 ---
 
-## Evaluation
+## Data Directory Layout (after prepare_data.sh)
 
-### nuScenes Detection / Mapping / Planning
-
-```bash
-cd nuScenes
-
-# Single GPU evaluation
-python tools/test.py \
-    projects/configs/UniDriveVLA/unidrivevla_mini_stage1.py \
-    work_dirs/mini_stage1/latest.pth \
-    --eval bbox map
-
-# Multi-GPU evaluation
-bash tools/dist_eval.sh \
-    projects/configs/UniDriveVLA/unidrivevla_mini_stage1.py \
-    work_dirs/mini_stage1/latest.pth \
-    4
 ```
-
-Full nuScenes metric suite:
-
-```bash
-python tools/evaluation/nuscenes_eval.py \
-    --result-path work_dirs/mini_stage1/results.json \
-    --dataroot data/nuscenes \
-    --version v1.0-mini \
-    --eval-set mini_val
-```
-
-### Planning Metrics (L2, Collision Rate)
-
-```bash
-python tools/evaluation/planning_eval.py \
-    --result-path work_dirs/mini_stage1/results.json \
-    --config projects/configs/UniDriveVLA/unidrivevla_mini_stage1.py
-```
-
-### DriveLM Evaluation
-
-```bash
-python vqa_evaluation/DriveLM/eval_drivelm.py \
-    --model-config projects/configs/UniDriveVLA/unidrivevla_mini_stage2.py \
-    --checkpoint work_dirs/mini_stage2/latest.pth \
-    --data-root data/drivelm \
-    --split val \
-    --output-dir work_dirs/drivelm_results
-```
-
-### DriveBench Evaluation
-
-```bash
-python vqa_evaluation/DriveBench/eval_drivebench.py \
-    --model-config projects/configs/UniDriveVLA/unidrivevla_mini_stage2.py \
-    --checkpoint work_dirs/mini_stage2/latest.pth \
-    --data-root data/drivebench \
-    --output-dir work_dirs/drivebench_results
-```
-
-### LingoQA Evaluation
-
-```bash
-python vqa_evaluation/LingoQA/eval_lingoqa.py \
-    --model-config projects/configs/UniDriveVLA/unidrivevla_mini_stage2.py \
-    --checkpoint work_dirs/mini_stage2/latest.pth \
-    --data-root data/lingoqa \
-    --output-dir work_dirs/lingoqa_results
-```
-
-### Bench2Drive (Requires CARLA)
-
-See [docs/bench2drive_setup.md](docs/bench2drive_setup.md). This requires a local CARLA 0.9.15 installation and cannot run in standard CI.
-
-```bash
-# Example (after CARLA setup)
-python tools/bench2drive_eval.py \
-    --checkpoint work_dirs/mini_stage2/latest.pth \
-    --carla-host localhost \
-    --carla-port 2000
+nuScenes/
+└── data/
+    ├── nuscenes/                   # symlink → your nuScenes v1.0-mini root
+    │   ├── v1.0-mini/
+    │   ├── samples/
+    │   ├── sweeps/
+    │   ├── maps/
+    │   └── can_bus/
+    ├── infos/
+    │   ├── nuscenes_mini_temporal_train.pkl
+    │   ├── nuscenes_mini_temporal_val.pkl
+    │   ├── vad_nuscenes_mini_temporal_train.pkl
+    │   └── vad_nuscenes_mini_temporal_val.pkl
+    └── kmeans/
+        ├── kmeans_det_900_mini.npy
+        ├── kmeans_map_100_mini.npy
+        ├── kmeans_motion_6_mini.npy
+        └── kmeans_plan_6_mini.npy
 ```
 
 ---
 
-## Results
+## Benchmark Results
 
-> **Note**: The table below shows placeholder metric names. Actual values are populated after running evaluation on the nuScenes mini validation set.
+> Fill in after running `bash scripts/run_benchmarks.sh`
 
-### Detection (Stage 1, nuScenes mini val)
+### nuScenes Open-Loop (v1.0-mini)
+| Metric | Stage 2 (2B) |
+|--------|-------------|
+| NDS | TBD |
+| mAP | TBD |
+| L2 @ 1s | TBD |
+| L2 @ 2s | TBD |
+| L2 @ 3s | TBD |
+| Collision @ 3s | TBD |
+| map IoU | TBD |
 
-| Model | NDS | mAP | mATE | mASE | mAOE | mAVE | mAAE |
-|-------|-----|-----|------|------|------|------|------|
-| UniDriveVLA-mini (Stage1) | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+### LingoQA (500 samples)
+| Metric | Score |
+|--------|-------|
+| LingoQA Score | TBD |
 
-### Online Mapping (Stage 1, nuScenes mini val)
+### DriveLM
+| Metric | Score |
+|--------|-------|
+| Accuracy | TBD |
+| BLEU-4 | TBD |
+| DriveLM Score | TBD |
 
-| Model | mIoU (divider) | mIoU (ped_crossing) | mIoU (boundary) | mIoU (avg) |
-|-------|---------------|---------------------|-----------------|------------|
-| UniDriveVLA-mini (Stage1) | TBD | TBD | TBD | TBD |
+### DriveBench
+| Metric | Score |
+|--------|-------|
+| Clean Accuracy | TBD |
+| mPC | TBD |
+| rPC | TBD |
 
-### Planning (Stage 1, nuScenes mini val)
-
-| Model | L2 (1s) | L2 (2s) | L2 (3s) | Col. Rate (1s) | Col. Rate (2s) | Col. Rate (3s) |
-|-------|---------|---------|---------|----------------|----------------|----------------|
-| UniDriveVLA-mini (Stage1) | TBD | TBD | TBD | TBD | TBD | TBD |
-
-### VQA (Stage 2)
-
-| Model | DriveLM Acc | DriveLM BLEU-4 | DriveLM CIDEr | LingoQA Score | DriveBench Score |
-|-------|-------------|----------------|---------------|---------------|------------------|
-| UniDriveVLA-mini (Stage2) | TBD | TBD | TBD | TBD | TBD |
-
----
-
-## nuScenes Mini Notes
-
-The nuScenes mini split differs from the full dataset in several ways that affect this configuration:
-
-| Parameter | Full nuScenes | nuScenes Mini |
-|-----------|--------------|---------------|
-| Version string | `v1.0` | `v1.0-mini` |
-| Scenes (train/val) | 700/150 | 7/3 |
-| Samples | ~28,000 | ~323 |
-| Image size | 960×544 | 800×450 |
-| BEV grid | 200×200 | 50×50 |
-| Queue length | 4 | 2 |
-| Batch size / GPU | 2–4 | 1 |
-| BEVFormer enc. layers | 6 | 3 |
-| Feature scales | Multi-scale | Single (C5) |
-| Stage 1 epochs | 24 | 24 |
-| Stage 2 epochs | 15 | 15 |
-| Info file (train) | `nuscenes_infos_train.pkl` | `nuscenes_infos_mini_train.pkl` |
-| Info file (val) | `nuscenes_infos_val.pkl` | `nuscenes_infos_mini_val.pkl` |
-
-Because the mini split has only ~323 samples, evaluation metrics will have high variance. Results should be interpreted as a sanity check rather than a performance benchmark.
+### Bench2Drive (requires CARLA)
+| Metric | Score |
+|--------|-------|
+| Driving Score | TBD |
+| Success Rate | TBD |
 
 ---
 
 ## Citation
 
-If you use this work, please cite the original UniDriveVLA paper:
-
 ```bibtex
-@article{unidrivevla2024,
-  title={UniDriveVLA: Unified Autonomous Driving with Vision-Language-Action Model},
-  author={Xiaomi Research},
-  journal={arXiv},
-  year={2024}
+@article{unidrivevla2025,
+  title   = {UniDriveVLA: Unified Vision-Language-Action Model for Autonomous Driving},
+  author  = {Xiaomi Research},
+  year    = {2025},
+  url     = {https://github.com/xiaomi-research/unidrivevla}
 }
 ```
 
-Please also cite the nuScenes dataset:
+---
 
-```bibtex
-@article{caesar2020nuscenes,
-  title={nuScenes: A multimodal dataset for autonomous driving},
-  author={Caesar, Holger and others},
-  journal={CVPR},
-  year={2020}
-}
-```
+## License
+
+Apache 2.0 — same as the original UniDriveVLA repository.
