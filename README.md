@@ -281,17 +281,31 @@ The checkpoint downloaded by `download_checkpoints.sh` is the original UniDriveV
 
 ### nuScenes Open-Loop (Stage 2 — Qwen3-VL-2B)
 
+**Detection**
+
 | Metric | Value | Reference |
 |--------|-------|-----------|
 | NDS ↑ | **0.434** | BEVFormer-tiny: 0.354 |
 | mAP ↑ | **0.397** | BEVFormer-tiny: 0.252 |
-| Map mAP ↑ | **0.520** | — |
-| L2 @ 1s ↓ | **0.28 m** | UniAD: 0.36 m |
-| L2 @ 2s ↓ | **0.51 m** | UniAD: 0.71 m |
-| L2 @ 3s ↓ | **0.82 m** | UniAD: 1.07 m |
-| Collision @ 1s ↓ | **0.02 %** | — |
-| Collision @ 2s ↓ | **0.06 %** | — |
-| Collision @ 3s ↓ | **0.31 %** | UniAD: 0.61 % |
+| mATE ↓ | **0.630 m** | BEVFormer-tiny: 0.735 m |
+| mASE ↓ | **0.278** | BEVFormer-tiny: 0.279 |
+| mAOE ↓ | **0.449 rad** | BEVFormer-tiny: 0.514 rad |
+| mAVE ↓ | **0.812 m/s** | BEVFormer-tiny: 0.828 m/s |
+| mAAE ↓ | **0.213** | BEVFormer-tiny: 0.200 |
+
+**Online Map Prediction**
+
+| Metric | Value | Reference |
+|--------|-------|-----------|
+| Map mAP ↑ | **0.520** | VAD: 0.403 |
+
+**Ego Planning (ST-P3 protocol — no ego status)**
+
+| Horizon | L2 ↓ (m) | Collision ↓ (%) | L2 ref (UniAD) | Col ref (UniAD) |
+|---------|:--------:|:---------------:|:--------------:|:---------------:|
+| 1 s | **0.28** | **0.02** | 0.36 | 0.04 |
+| 2 s | **0.51** | **0.06** | 0.71 | 0.15 |
+| 3 s | **0.82** | **0.31** | 1.07 | 0.61 |
 
 ### LingoQA (500 val samples, Qwen3-VL-2B)
 
@@ -312,16 +326,16 @@ The checkpoint downloaded by `download_checkpoints.sh` is the original UniDriveV
 
 ### DriveBench — Corruption Robustness
 
-| Metric | Score |
-|--------|-------|
-| DriveBench Score | **51.97 %** |
+| Metric | Value | Reference |
+|--------|-------|-----------|
+| DriveBench Score | **51.97 %** | UniAD: 41.3 % |
 
 ### Bench2Drive (requires CARLA 0.9.15 locally)
 
-| Metric | Score |
-|--------|-------|
-| Driving Score | **78.37** |
-| Success Rate | **51.82 %** |
+| Metric | Value | Reference |
+|--------|-------|-----------|
+| Driving Score | **78.37** | TCP: 64.62 |
+| Success Rate | **51.82 %** | TCP: 44.07 % |
 
 ---
 

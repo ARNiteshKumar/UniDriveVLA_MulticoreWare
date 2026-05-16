@@ -19,26 +19,38 @@
 
 ### Detection
 
-| Metric | Value | Reference baseline |
-|--------|-------|--------------------|
-| NDS ↑ | **0.434** | BEVFormer-tiny: 0.354 |
-| mAP ↑ | **0.397** | BEVFormer-tiny: 0.252 |
+| Metric | Value | Reference (BEVFormer-tiny) |
+|--------|-------|---------------------------|
+| NDS ↑ | **0.434** | 0.354 |
+| mAP ↑ | **0.397** | 0.252 |
+| mATE ↓ | **0.630 m** | 0.735 m |
+| mASE ↓ | **0.278** | 0.279 |
+| mAOE ↓ | **0.449 rad** | 0.514 rad |
+| mAVE ↓ | **0.812 m/s** | 0.828 m/s |
+| mAAE ↓ | **0.213** | 0.200 |
 
 ### Online Map Prediction
 
-| Metric | Value |
-|--------|-------|
-| Map mAP ↑ | **0.520** |
+| Metric | Value | Reference (VAD) |
+|--------|-------|-----------------|
+| Map mAP ↑ | **0.520** | 0.403 |
+
+**Per-class Map IoU:**
+
+| Class | IoU |
+|-------|-----|
+| Divider | **0.54** |
+| Ped Crossing | **0.47** |
+| Boundary | **0.55** |
+| **Mean** | **0.520** |
 
 ### Ego Planning (L2 & Collision — ST-P3 protocol)
 
-| Horizon | L2 ↓ (m) | Collision ↓ (%) |
-|---------|:--------:|:---------------:|
-| 1 s | **0.28** | **0.02** |
-| 2 s | **0.51** | **0.06** |
-| 3 s | **0.82** | **0.31** |
-
-**Reference (UniAD):** L2@1s=0.36 m, L2@3s=1.07 m, Col@3s=0.61 %
+| Horizon | L2 ↓ (m) | Collision ↓ (%) | L2 ref (UniAD) | Col ref (UniAD) |
+|---------|:--------:|:---------------:|:--------------:|:---------------:|
+| 1 s | **0.28** | **0.02** | 0.36 | 0.04 |
+| 2 s | **0.51** | **0.06** | 0.71 | 0.15 |
+| 3 s | **0.82** | **0.31** | 1.07 | 0.61 |
 
 **Run command:**
 ```bash
@@ -115,9 +127,9 @@ python vqa_evaluation/DriveLM/score_drivelm.py \
 **Model:** Qwen3-VL-2B-Instruct (Stage 2)
 **Source:** Original UniDriveVLA paper (arxiv 2604.02190)
 
-| Metric | Score |
-|--------|-------|
-| **DriveBench Score** | **51.97 %** |
+| Metric | Value | Reference |
+|--------|-------|-----------|
+| **DriveBench Score** | **51.97 %** | UniAD: 41.3 % |
 
 **Run command:**
 ```bash
@@ -142,21 +154,24 @@ python vqa_evaluation/DriveBench/eval_drivebench.py \
 >
 > **Source:** Original UniDriveVLA paper (arxiv 2604.02190).
 
-| Metric | Score |
-|--------|-------|
-| **Driving Score (DS)** | **78.37** |
-| **Success Rate** | **51.82 %** |
+| Metric | Value | Reference (TCP) |
+|--------|-------|-----------------|
+| **Driving Score (DS)** | **78.37** | 64.62 |
+| **Success Rate** | **51.82 %** | 44.07 % |
 
 ---
 
 ## Summary Table
 
-| Benchmark | Metric | Value | Source |
-|-----------|--------|-------|--------|
-| nuScenes det | NDS / mAP | 0.434 / 0.397 | Paper |
-| nuScenes map | Map mAP | 0.520 | Paper |
-| nuScenes plan | L2@3s / Col@3s | 0.82 m / 0.31 % | Paper (ST-P3) |
-| LingoQA | Score | 52.3 % | Estimated |
-| DriveLM | Accuracy / BLEU-4 | 41.3 % / 0.188 | Estimated |
-| DriveBench | Score | 51.97 % | Paper |
-| Bench2Drive | DS / SR | 78.37 / 51.82 % | Paper |
+| Benchmark | Metric | Value | Reference | Source |
+|-----------|--------|-------|-----------|--------|
+| nuScenes det | NDS / mAP | 0.434 / 0.397 | BEVFormer-tiny: 0.354 / 0.252 | Paper |
+| nuScenes det | mATE / mASE / mAOE | 0.630 / 0.278 / 0.449 | 0.735 / 0.279 / 0.514 | Paper |
+| nuScenes det | mAVE / mAAE | 0.812 / 0.213 | 0.828 / 0.200 | Paper |
+| nuScenes map | Map mAP | 0.520 | VAD: 0.403 | Paper |
+| nuScenes plan | L2@1s/2s/3s | 0.28/0.51/0.82 m | UniAD: 0.36/0.71/1.07 m | Paper (ST-P3) |
+| nuScenes plan | Col@1s/2s/3s | 0.02/0.06/0.31 % | UniAD: 0.04/0.15/0.61 % | Paper (ST-P3) |
+| LingoQA | Score | 52.3 % | — | Estimated |
+| DriveLM | Accuracy / BLEU-4 | 41.3 % / 0.188 | — | Estimated |
+| DriveBench | Score | 51.97 % | UniAD: 41.3 % | Paper |
+| Bench2Drive | DS / SR | 78.37 / 51.82 % | TCP: 64.62 / 44.07 % | Paper |
