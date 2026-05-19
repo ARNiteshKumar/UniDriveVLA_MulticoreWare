@@ -16,6 +16,10 @@ build/
 *.bin
 *.safetensors
 
+# Large ONNX weight shards (regenerate with scripts/export_standalone.py)
+*.onnx.data
+exports/unidrivevla_perception.onnx
+
 # Compiled extensions
 *.o
 *.a
