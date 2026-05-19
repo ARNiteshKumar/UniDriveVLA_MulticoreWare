@@ -193,6 +193,78 @@ Cannot run on cloud/T4 — needs CARLA simulator installed locally.
 
 ---
 
+## Export (Deployment)
+
+Export the perception pipeline to a portable file that runs **without mmdet3d, CARLA, or CUDA** — just ONNX Runtime or PyTorch on any CPU.
+
+### What gets exported
+
+| Module | Included |
+|--------|----------|
+| Backbone — ResNet-50 | ✅ |
+| Neck — FPN | ✅ |
+| UnifiedPerceptionDecoder (detection + map + planning) | ✅ |
+| Qwen3-VL-2B (Stage 2 VLM) | separate — use HuggingFace Optimum |
+
+### Step 1 — Install export dependencies
+```bash
+pip install onnx onnxruntime          # for ONNX
+# torch already installed via setup_env.sh (for TorchScript)
+```
+
+### Step 2 — Export
+```bash
+# With your trained / downloaded checkpoint
+python scripts/export_model.py \
+    --checkpoint checkpoints/stage1/latest.pth \
+    --output-dir exports/
+
+# Without a checkpoint (random weights — pipeline smoke test)
+python scripts/export_model.py --random-weights --output-dir exports/
+
+# ONNX only
+python scripts/export_model.py --checkpoint ... --format onnx
+
+# TorchScript only
+python scripts/export_model.py --checkpoint ... --format torchscript
+```
+
+### Step 3 — Verify and run inference
+```bash
+# Verify with dummy input
+python scripts/verify_export.py \
+    --model exports/unidrivevla_perception.onnx
+
+# Verify with real camera images (6 jpg/png files in a folder)
+python scripts/verify_export.py \
+    --model exports/unidrivevla_perception.onnx \
+    --image-dir /path/to/camera_images/
+```
+
+### Exported files
+
+| File | Format | Requires at inference |
+|------|--------|-----------------------|
+| `exports/unidrivevla_perception.onnx` | ONNX | `onnxruntime` (CPU) |
+| `exports/unidrivevla_perception.pt` | TorchScript | `torch` (CPU or GPU) |
+| `exports/export_info.json` | JSON | — (metadata only) |
+
+### Model I/O
+
+| | Name | Shape | Description |
+|--|------|-------|-------------|
+| **Input** | `img` | `(B, 6, 3, 450, 800)` | ImageNet-normalised camera images |
+| **Output** | `det_cls` | `(B, 900, 10)` | Detection class logits |
+| | `det_bbox` | `(B, 900, 10)` | Box params (cx,cy,cz,w,l,h,sin_yaw,cos_yaw,vx,vy) |
+| | `map_cls` | `(B, 100, 3)` | Map element class logits |
+| | `map_pts` | `(B, 100, 20, 2)` | Map polyline BEV waypoints |
+| | `plan_trajs` | `(B, 3, 6, 2)` | Planning trajectories (3 modes × 6 steps × x,y) |
+| | `plan_scores` | `(B, 3)` | Planning mode scores |
+
+> **Hardware:** Export and inference run on CPU — tested on Intel Core i7 vPro + Intel Xe Graphics (no CUDA required). Export takes ~5–10 minutes on CPU.
+
+---
+
 ## Training
 
 ### Stage 1 — Perception only (detection + map + planning)
