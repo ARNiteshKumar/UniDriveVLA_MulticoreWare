@@ -44,10 +44,156 @@ def parse_args():
     parser.add_argument('--launcher', choices=['none', 'pytorch', 'slurm', 'mpi'],
                         default='pytorch')
     parser.add_argument('--local_rank', type=int, default=0)
+    # ── export flags ──────────────────────────────────────────────────────────
+    parser.add_argument('--export', action='store_true',
+                        help='Export the loaded model (planning head + decoder) to '
+                             'ONNX and TorchScript after loading the checkpoint.')
+    parser.add_argument('--export-dir', default='exports',
+                        help='Directory to save exported ONNX / TorchScript files.')
+    parser.add_argument('--export-only', action='store_true',
+                        help='Run export then exit without running evaluation.')
     args = parser.parse_args()
     if 'LOCAL_RANK' not in os.environ:
         os.environ['LOCAL_RANK'] = str(args.local_rank)
     return args
+
+
+def export_model(model, export_dir: str):
+    """Export planning_head (QwenVL3APlanningHead) + decoder to ONNX and TorchScript.
+
+    Called when --export or --export-only is passed to test.py.
+    The model must already have a checkpoint loaded.
+
+    Exports:
+        <export_dir>/planning_head.onnx       ONNX opset 14
+        <export_dir>/planning_head.pt         TorchScript (torch.jit.trace)
+        <export_dir>/planning_head_info.json  metadata
+    """
+    import json
+    from pathlib import Path
+
+    out_dir = Path(export_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── unwrap DDP if needed ──────────────────────────────────────────────────
+    raw = model.module if hasattr(model, 'module') else model
+
+    # ── locate planning_head ──────────────────────────────────────────────────
+    planning_head = getattr(raw, 'planning_head', None)
+    if planning_head is None:
+        print('[export] WARNING: model has no planning_head — nothing to export.')
+        return
+
+    print('\n' + '=' * 58)
+    print('  Export: QwenVL3APlanningHead (from loaded checkpoint)')
+    print('=' * 58)
+
+    # ── build a thin trace wrapper around planning_head.perception_decoder ────
+    # Input to the decoder is BEV tokens: (B, bev_h*bev_w, embed_dim)
+    decoder = getattr(planning_head, 'perception_decoder', None)
+    if decoder is None:
+        print('[export] WARNING: planning_head has no perception_decoder.')
+        return
+
+    class _DecodeWrapper(torch.nn.Module):
+        """Wraps UnifiedPerceptionDecoder for export: BEV tokens → 6 outputs."""
+        def __init__(self, dec):
+            super().__init__()
+            self.dec = dec
+
+        def forward(self, bev_tokens):
+            s1 = self.dec.forward_stage1(bev_tokens)
+            preds = self.dec.predict(s1)
+            return (
+                preds['det_cls'],
+                preds['det_bbox'],
+                preds['map_cls'],
+                preds['map_pts'],
+                preds['plan_trajs'],
+                preds['plan_scores'],
+            )
+
+    wrapper = _DecodeWrapper(decoder).eval()
+    n_params = sum(p.numel() for p in wrapper.parameters()) / 1e6
+    print(f'  Decoder params : {n_params:.1f} M')
+
+    bev_h = getattr(planning_head, '_bev_h', 50)
+    bev_w = getattr(planning_head, '_bev_w', 50)
+    embed_dim = decoder.embed_dim if hasattr(decoder, 'embed_dim') else 256
+    dummy = torch.zeros(1, bev_h * bev_w, embed_dim, device='cpu')
+    print(f'  Dummy input    : {list(dummy.shape)}  (1 batch, {bev_h}×{bev_w} BEV, {embed_dim}-dim)')
+
+    # reference forward
+    with torch.no_grad():
+        ref = wrapper(dummy)
+    out_names = ['det_cls', 'det_bbox', 'map_cls', 'map_pts', 'plan_trajs', 'plan_scores']
+    print('  Output shapes:')
+    for name, out in zip(out_names, ref):
+        print(f'    {name:<14}: {list(out.shape)}')
+
+    # ── ONNX ─────────────────────────────────────────────────────────────────
+    onnx_path = out_dir / 'planning_head.onnx'
+    print(f'\n  Exporting ONNX → {onnx_path}')
+    t0 = time.time()
+    torch.onnx.export(
+        wrapper, dummy, str(onnx_path),
+        input_names=['bev_tokens'],
+        output_names=out_names,
+        dynamic_axes={'bev_tokens': {0: 'batch'}, **{n: {0: 'batch'} for n in out_names}},
+        opset_version=14,
+        do_constant_folding=True,
+        export_params=True,
+    )
+    onnx_mb = onnx_path.stat().st_size / 1e6
+    print(f'  Done {time.time()-t0:.1f}s  |  {onnx_mb:.1f} MB')
+
+    # verify
+    try:
+        import onnxruntime as ort
+        import numpy as np
+        sess = ort.InferenceSession(str(onnx_path), providers=['CPUExecutionProvider'])
+        ort_outs = sess.run(None, {'bev_tokens': dummy.numpy()})
+        ok = True
+        for name, r, o in zip(out_names, ref, ort_outs):
+            diff = abs(r.detach().numpy() - o).max()
+            sym  = '✓' if diff < 1e-4 else '✗'
+            print(f'  {sym}  {name:<14} max_diff={diff:.2e}')
+            if diff >= 1e-4:
+                ok = False
+        print('  ONNX verified ✓' if ok else '  WARNING: outputs differ')
+    except ImportError:
+        print('  onnxruntime not installed — skipping verify')
+
+    # ── TorchScript ──────────────────────────────────────────────────────────
+    ts_path = out_dir / 'planning_head.pt'
+    print(f'\n  Exporting TorchScript → {ts_path}')
+    t0 = time.time()
+    with torch.no_grad():
+        traced = torch.jit.trace(wrapper, dummy, strict=False)
+    traced.save(str(ts_path))
+    ts_mb = ts_path.stat().st_size / 1e6
+    print(f'  Done {time.time()-t0:.1f}s  |  {ts_mb:.1f} MB')
+
+    # ── metadata ──────────────────────────────────────────────────────────────
+    info = {
+        'component': 'QwenVL3APlanningHead → UnifiedPerceptionDecoder',
+        'exported_from': 'nuScenes/tools/test.py --export',
+        'input': {'name': 'bev_tokens',
+                  'shape': [1, bev_h * bev_w, embed_dim],
+                  'description': f'(batch, {bev_h}×{bev_w} BEV tokens, {embed_dim}-dim)'},
+        'outputs': {n: {'shape': list(r.shape)} for n, r in zip(out_names, ref)},
+        'parameters_M': round(n_params, 1),
+        'file_sizes_MB': {'onnx': round(onnx_mb, 1), 'torchscript': round(ts_mb, 1)},
+    }
+    info_path = out_dir / 'planning_head_info.json'
+    info_path.write_text(json.dumps(info, indent=2))
+
+    print(f'\n  Metadata → {info_path}')
+    print('=' * 58)
+    print('  Export complete.')
+    print(f'  {onnx_path}')
+    print(f'  {ts_path}')
+    print('=' * 58)
 
 
 def main():
@@ -125,6 +271,12 @@ def main():
         model.PALETTE = checkpoint['meta']['PALETTE']
     elif hasattr(dataset, 'PALETTE'):
         model.PALETTE = dataset.PALETTE
+
+    # ── export (optional) ─────────────────────────────────────────────────────
+    if args.export or args.export_only:
+        export_model(model, args.export_dir)
+        if args.export_only:
+            return
 
     model = MMDistributedDataParallel(
         model.cuda(),
