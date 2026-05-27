@@ -1,0 +1,75 @@
+{
+  "component": "QwenVL3APlanningHead",
+  "config_source": "unidrivevla_b2d_stage1_unified_2b_no_cotraining.py",
+  "vlm": "Qwen3-VL-2B (stub \u2014 same hidden_dim=2048, random weights)",
+  "vlm_fusion_cfg": "type='direct'",
+  "action_dim": 2,
+  "action_horizon": 6,
+  "input": {
+    "name": "bev_tokens",
+    "shape": [
+      1,
+      2500,
+      256
+    ],
+    "dtype": "float32",
+    "description": "(batch, bev_h*bev_w, embed_dim) BEV tokens from neck"
+  },
+  "outputs": {
+    "det_cls": {
+      "shape": [
+        1,
+        900,
+        10
+      ]
+    },
+    "det_bbox": {
+      "shape": [
+        1,
+        900,
+        10
+      ]
+    },
+    "map_cls": {
+      "shape": [
+        1,
+        100,
+        3
+      ]
+    },
+    "map_pts": {
+      "shape": [
+        1,
+        100,
+        20,
+        2
+      ]
+    },
+    "plan_trajs": {
+      "shape": [
+        1,
+        3,
+        6,
+        2
+      ]
+    },
+    "plan_scores": {
+      "shape": [
+        1,
+        3
+      ]
+    },
+    "vlm_plan": {
+      "shape": [
+        1,
+        6,
+        2
+      ]
+    }
+  },
+  "parameters_M": 8.6,
+  "file_sizes_MB": {
+    "onnx": 0.8,
+    "torchscript": 37.5
+  }
+}
