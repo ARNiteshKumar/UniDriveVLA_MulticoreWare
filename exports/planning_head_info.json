@@ -1,19 +1,64 @@
 {
-  "component": "QwenVL3APlanningHead",
+  "component": "QwenVL3APlanningHead (full pipeline)",
   "config_source": "unidrivevla_b2d_stage1_unified_2b_no_cotraining.py",
-  "vlm": "Qwen3-VL-2B (stub \u2014 same hidden_dim=2048, random weights)",
+  "pipeline": [
+    "ResNet-50 backbone (img_backbone)",
+    "FPN neck Conv2d(2048->256) (img_neck)",
+    "BEV camera-avg + adaptive_avg_pool2d(50x50)",
+    "UnifiedPerceptionDecoder Stage1 (perception)",
+    "VLM stub Linear(256->2048) [Qwen3-VL-2B placeholder]",
+    "DirectVLMFusion Linear(2048->256) (vlm_fusion_cfg=direct)",
+    "UnifiedPerceptionDecoder Stage2 (VLM cross-attn)",
+    "ActionHead Linear(2048->12) -> (B,6,2)"
+  ],
+  "vlm": "Qwen3-VL-2B (stub -- same hidden_dim=2048, random weights)",
   "vlm_fusion_cfg": "type='direct'",
   "action_dim": 2,
   "action_horizon": 6,
   "input": {
-    "name": "bev_tokens",
+    "name": "img",
     "shape": [
+      1,
+      6,
+      3,
+      450,
+      800
+    ],
+    "dtype": "float32",
+    "description": "(batch, 6 cameras, 3ch, 450x800) raw camera images"
+  },
+  "intermediate_shapes": {
+    "c5_per_cam": [
+      6,
+      2048,
+      14,
+      25
+    ],
+    "fpn_per_cam": [
+      6,
+      256,
+      14,
+      25
+    ],
+    "bev_tokens": [
       1,
       2500,
       256
-    ],
-    "dtype": "float32",
-    "description": "(batch, bev_h*bev_w, embed_dim) BEV tokens from neck"
+    ]
+  },
+  "neck_weight_stats": {
+    "lateral_Conv2d_2048x256x1x1": {
+      "min": -0.0221,
+      "max": 0.0221,
+      "mean": -0.0,
+      "std": 0.0128
+    },
+    "output_Conv2d_256x256x3x3": {
+      "min": -0.0208,
+      "max": 0.0208,
+      "mean": -0.0,
+      "std": 0.012
+    }
   },
   "outputs": {
     "det_cls": {
@@ -67,9 +112,17 @@
       ]
     }
   },
-  "parameters_M": 8.6,
+  "parameters_M": {
+    "total": 33.2,
+    "backbone": 23.5,
+    "neck": 1.115,
+    "vlm_stub": 0.526,
+    "vlm_fusion": 0.525,
+    "decoder": 7.5,
+    "action_head": 0.0246
+  },
   "file_sizes_MB": {
-    "onnx": 0.8,
-    "torchscript": 37.5
+    "onnx": 1.0,
+    "torchscript": 136.5
   }
 }
