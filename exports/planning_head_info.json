@@ -56,7 +56,7 @@
     "output_Conv2d_256x256x3x3": {
       "min": -0.0208,
       "max": 0.0208,
-      "mean": -0.0,
+      "mean": 0.0,
       "std": 0.012
     }
   },
@@ -122,7 +122,7 @@
     "action_head": 0.0246
   },
   "file_sizes_MB": {
-    "onnx": 1.0,
-    "torchscript": 136.5
+    "onnx": 0.9,
+    "torchscript": 136.6
   }
 }

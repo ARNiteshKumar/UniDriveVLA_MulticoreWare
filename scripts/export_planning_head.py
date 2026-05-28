@@ -295,7 +295,7 @@ OUT_NAMES = [
 ]
 
 def export_onnx(model, dummy, path):
-    print("  Exporting ONNX ...")
+    print("  Exporting ONNX (verbose=True) ...")
     t = time.time()
     torch.onnx.export(
         model, dummy, str(path),
@@ -308,6 +308,7 @@ def export_onnx(model, dummy, path):
         opset_version=14,
         do_constant_folding=True,
         export_params=True,
+        verbose=True,   # show op-level tracing from source
     )
     mb = path.stat().st_size / 1e6
     print(f"  Done {time.time()-t:.1f}s  |  {mb:.1f} MB")
@@ -331,6 +332,40 @@ def verify_onnx(path, dummy, ref_outs):
         if diff >= 1e-4:
             ok = False
     print("  ONNX verified OK" if ok else "  WARNING: some outputs differ")
+
+
+def analyze_onnx_ops(path):
+    """Print ONNX op-type counts and flag any Unsqueeze / Split ops."""
+    try:
+        import onnx
+        from collections import Counter
+        g = onnx.load(str(path))
+        counts = Counter(n.op_type for n in g.graph.node)
+        total = len(g.graph.node)
+        print(f"\n  ONNX graph: {total} nodes total")
+        print("  Op counts (all types):")
+        for op, cnt in sorted(counts.items(), key=lambda x: -x[1]):
+            flag = ""
+            if op == "Unsqueeze":
+                flag = "  <-- CHECK: was this from query params or pos-enc?"
+            elif op == "Split":
+                flag = "  <-- CHECK: was this from MHA in_proj_weight?"
+            elif op == "Conv":
+                flag = "  <-- backbone + FPN neck confirmed"
+            print(f"    {op:<22}: {cnt:>4}{flag}")
+        # Summary
+        n_unsqueeze = counts.get("Unsqueeze", 0)
+        n_split     = counts.get("Split",     0)
+        n_conv      = counts.get("Conv",      0)
+        print(f"\n  Unsqueeze ops : {n_unsqueeze}  (target: 0 after fix)")
+        print(f"  Split ops     : {n_split}  (target: 0 after fix)")
+        print(f"  Conv ops      : {n_conv}  (backbone + neck present: {'YES' if n_conv > 0 else 'NO'})")
+        if n_unsqueeze == 0 and n_split == 0:
+            print("  [PASS] No Unsqueeze or Split ops in graph.")
+        else:
+            print("  [WARN] Still has Unsqueeze/Split — check source above.")
+    except ImportError:
+        print("  onnx not installed -- skipping op analysis")
 
 
 def export_torchscript(model, dummy, path):
@@ -443,6 +478,7 @@ def main():
     onnx_mb   = export_onnx(model, dummy, onnx_path)
     print("  Verifying ONNX outputs vs PyTorch reference ...")
     verify_onnx(onnx_path, dummy, ref)
+    analyze_onnx_ops(onnx_path)
 
     # Count Conv ops in ONNX graph to confirm neck is present
     try:

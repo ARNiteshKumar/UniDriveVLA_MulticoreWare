@@ -13,6 +13,12 @@ nuScenes mini dataset (50×50 BEV, 800×450 images, BEVFormer-tiny style).
 Stage 1  — perception-only; no VLM tokens injected.
 Stage 2  — VLM output tokens are concatenated with BEV features before
            the second set of decoder layers.
+
+ONNX-clean design notes:
+  - Query params stored as (1, N, d) to avoid Unsqueeze ops in ONNX graph.
+  - BEV positional encoding stored as (1, H*W, d) for same reason.
+  - MultiheadAttention replaced with explicit Q/K/V projections to avoid the
+    Split(in_proj_weight) op that nn.MultiheadAttention generates in ONNX.
 """
 
 import math
@@ -57,7 +63,10 @@ class MLP(nn.Module):
 
 
 class BEVPositionEncoding(nn.Module):
-    """2-D sine-cosine positional encoding over the BEV grid."""
+    """2-D sine-cosine positional encoding over the BEV grid.
+
+    pe stored as (1, H*W, d) so forward() needs no Unsqueeze op in ONNX.
+    """
 
     def __init__(self, embed_dim: int, bev_h: int = BEV_H_MINI, bev_w: int = BEV_W_MINI):
         super().__init__()
@@ -65,7 +74,8 @@ class BEVPositionEncoding(nn.Module):
         self.embed_dim = embed_dim
         self.bev_h = bev_h
         self.bev_w = bev_w
-        self.register_buffer("pe", self._build_pe(embed_dim, bev_h, bev_w))
+        # Store as (1, H*W, d) — avoids Unsqueeze in ONNX graph
+        self.register_buffer("pe", self._build_pe(embed_dim, bev_h, bev_w).unsqueeze(0))
 
     @staticmethod
     def _build_pe(d: int, h: int, w: int) -> torch.Tensor:
@@ -86,7 +96,7 @@ class BEVPositionEncoding(nn.Module):
             ],
             dim=-1,
         )  # (H, W, d)
-        return pe.view(h * w, d)
+        return pe.view(h * w, d)  # (H*W, d)
 
     def forward(self, bev_tokens: torch.Tensor) -> torch.Tensor:
         """Add positional encoding to BEV tokens.
@@ -96,22 +106,94 @@ class BEVPositionEncoding(nn.Module):
         Returns:
             (B, H*W, d)
         """
-        return bev_tokens + self.pe.unsqueeze(0)
+        # self.pe is (1, H*W, d) — no Unsqueeze needed, broadcasts over batch
+        return bev_tokens + self.pe
 
 
 class InstanceQueryBank(nn.Module):
-    """Learnable instance-level queries (detection and map separately)."""
+    """Learnable instance-level queries stored as (1, N, d) Parameters.
+
+    Using nn.Parameter with shape (1, N, d) instead of nn.Embedding avoids
+    the Unsqueeze(0) + Expand pattern in the ONNX graph.
+    """
 
     def __init__(self, num_det: int, num_map: int, embed_dim: int):
         super().__init__()
-        self.det_queries = nn.Embedding(num_det, embed_dim)
-        self.map_queries = nn.Embedding(num_map, embed_dim)
+        # (1, N, d) — the leading 1 is the batch placeholder; Expand handles the rest
+        self.det_queries = nn.Parameter(torch.empty(1, num_det, embed_dim))
+        self.map_queries = nn.Parameter(torch.empty(1, num_map, embed_dim))
+        nn.init.normal_(self.det_queries, std=0.02)
+        nn.init.normal_(self.map_queries, std=0.02)
 
     def get_det(self) -> torch.Tensor:
-        return self.det_queries.weight  # (N_det, d)
+        return self.det_queries  # (1, N_det, d)
 
     def get_map(self) -> torch.Tensor:
-        return self.map_queries.weight  # (N_map, d)
+        return self.map_queries  # (1, N_map, d)
+
+
+class ExplicitMHA(nn.Module):
+    """Multi-head attention with explicit Q, K, V projection matrices.
+
+    Replaces nn.MultiheadAttention to eliminate the Split(in_proj_weight)
+    op that PyTorch's packed in_proj_weight produces in ONNX.
+
+    Separate q_proj / k_proj / v_proj Linear layers each appear as a single
+    MatMul in the ONNX graph — no Split needed.
+    """
+
+    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0):
+        super().__init__()
+        assert embed_dim % num_heads == 0
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim  = embed_dim // num_heads
+        self.scale     = self.head_dim ** -0.5
+
+        # Explicit projections — 3 separate MatMul ops, no Split
+        self.q_proj  = nn.Linear(embed_dim, embed_dim)
+        self.k_proj  = nn.Linear(embed_dim, embed_dim)
+        self.v_proj  = nn.Linear(embed_dim, embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.attn_drop = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor] = None,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, None]:
+        """
+        Args:
+            query : (B, Tq, d)
+            key   : (B, Tk, d)
+            value : (B, Tk, d)
+        Returns:
+            (B, Tq, d), None  — same signature as nn.MultiheadAttention
+        """
+        B, Tq, _ = query.shape
+        Tk = key.shape[1]
+        H, D = self.num_heads, self.head_dim
+
+        Q = self.q_proj(query).reshape(B, Tq, H, D).transpose(1, 2)   # (B, H, Tq, D)
+        K = self.k_proj(key).reshape(B, Tk, H, D).transpose(1, 2)     # (B, H, Tk, D)
+        V = self.v_proj(value).reshape(B, Tk, H, D).transpose(1, 2)   # (B, H, Tk, D)
+
+        attn = (Q @ K.transpose(-2, -1)) * self.scale                  # (B, H, Tq, Tk)
+
+        if attn_mask is not None:
+            attn = attn + attn_mask
+        if key_padding_mask is not None:
+            # (B, Tk) → (B, 1, 1, Tk)
+            attn = attn.masked_fill(
+                key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf")
+            )
+
+        attn = self.attn_drop(attn.softmax(dim=-1))
+        out = (attn @ V).transpose(1, 2).reshape(B, Tq, self.embed_dim)
+        return self.out_proj(out), None
 
 
 class BEVCrossAttention(nn.Module):
@@ -119,7 +201,7 @@ class BEVCrossAttention(nn.Module):
 
     def __init__(self, embed_dim: int, num_heads: int = 8, dropout: float = 0.1):
         super().__init__()
-        self.attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.attn = ExplicitMHA(embed_dim, num_heads, dropout)
         self.norm = nn.LayerNorm(embed_dim)
         self.dropout = nn.Dropout(dropout)
 
@@ -129,13 +211,6 @@ class BEVCrossAttention(nn.Module):
         bev_features: torch.Tensor,
         key_padding_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """
-        Args:
-            queries:      (B, N_q, d)
-            bev_features: (B, H*W, d)
-        Returns:
-            (B, N_q, d)
-        """
         attended, _ = self.attn(
             queries, bev_features, bev_features, key_padding_mask=key_padding_mask
         )
@@ -147,7 +222,7 @@ class SelfAttentionLayer(nn.Module):
 
     def __init__(self, embed_dim: int, num_heads: int = 8, dropout: float = 0.1):
         super().__init__()
-        self.attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.attn = ExplicitMHA(embed_dim, num_heads, dropout)
         self.norm = nn.LayerNorm(embed_dim)
         self.dropout = nn.Dropout(dropout)
 
@@ -364,8 +439,6 @@ class UnifiedPerceptionDecoder(BaseModule):
         self.bev_w = bev_w
 
         # Try to build BEVFormerEncoder from mmdetection3d if the config is provided.
-        # When available this produces geometrically-correct BEV features from multi-camera
-        # images; otherwise _prepare_bev() falls back to simple linear projection + pos-enc.
         self.bev_encoder = None
         if encoder is not None:
             try:
@@ -377,12 +450,13 @@ class UnifiedPerceptionDecoder(BaseModule):
         # BEV feature projection (from backbone output to embed_dim)
         self.bev_proj = nn.Linear(bev_in_channels, embed_dim) if bev_in_channels != embed_dim else nn.Identity()
 
-        # Positional encoding
+        # Positional encoding — pe stored as (1, H*W, d), no Unsqueeze in ONNX
         self.bev_pos_enc = BEVPositionEncoding(embed_dim, bev_h, bev_w)
 
-        # Instance queries
+        # Instance queries — stored as (1, N, d) Parameters, no Unsqueeze in ONNX
         self.query_bank = InstanceQueryBank(num_det_queries, num_map_queries, embed_dim)
-        self.ego_query = nn.Parameter(torch.zeros(1, embed_dim))
+        # ego_query stored as (1, 1, d) — no Unsqueeze needed in _get_queries
+        self.ego_query = nn.Parameter(torch.zeros(1, 1, embed_dim))
         nn.init.normal_(self.ego_query, std=0.02)
 
         # Stage 1 decoder layers (perception only)
@@ -445,10 +519,14 @@ class UnifiedPerceptionDecoder(BaseModule):
         return bev_tokens
 
     def _get_queries(self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return det, map, and ego queries expanded to batch size."""
-        det_q = self.query_bank.get_det().unsqueeze(0).expand(batch_size, -1, -1)
-        map_q = self.query_bank.get_map().unsqueeze(0).expand(batch_size, -1, -1)
-        ego_q = self.ego_query.unsqueeze(0).expand(batch_size, 1, -1)
+        """Return det, map, and ego queries expanded to batch size.
+
+        query_bank params are (1, N, d) and ego_query is (1, 1, d) so only
+        Expand is needed — no Unsqueeze op in the ONNX graph.
+        """
+        det_q = self.query_bank.get_det().expand(batch_size, -1, -1)  # (B, N_det, d)
+        map_q = self.query_bank.get_map().expand(batch_size, -1, -1)  # (B, N_map, d)
+        ego_q = self.ego_query.expand(batch_size, -1, -1)             # (B, 1, d)
         return det_q, map_q, ego_q
 
     def _run_bev_encoder(
@@ -458,21 +536,13 @@ class UnifiedPerceptionDecoder(BaseModule):
         img_metas: Optional[list] = None,
         prev_bev: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Run BEVFormerEncoder when available; otherwise pass through.
-
-        When self.bev_encoder is set (built from mmdetection3d BEVFormerEncoder),
-        it consumes img_feats + img_metas and produces geometrically-correct BEV
-        features.  When not set, bev_features (already pseudo-BEV from the planning
-        head) are returned unchanged.
-        """
+        """Run BEVFormerEncoder when available; otherwise pass through."""
         if self.bev_encoder is None or img_feats is None:
             return bev_features
 
         try:
             B = bev_features.shape[0]
-            # BEV queries are the positional embeddings — (bev_h*bev_w, C)
-            bev_queries = self.bev_pos_enc.pe.unsqueeze(0).expand(B, -1, -1)  # (B, H*W, C)
-            # Compute spatial shapes from img_feats list
+            bev_queries = self.bev_pos_enc.pe.expand(B, -1, -1)  # (B, H*W, C)
             spatial_shapes = torch.as_tensor(
                 [[f.shape[-2], f.shape[-1]] for f in img_feats],
                 dtype=torch.long,
@@ -505,17 +575,7 @@ class UnifiedPerceptionDecoder(BaseModule):
         img_feats: Optional[list] = None,
         img_metas: Optional[list] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Stage 1 forward — perception only (no VLM).
-
-        Args:
-            bev_features: (B, C, H, W) or (B, H*W, C)  — pseudo-BEV from avg-pool
-            bev_mask:     optional key-padding mask (B, H*W)
-            img_feats:    raw backbone+neck features; used by BEVFormerEncoder when built
-            img_metas:    camera calibration dicts; used by BEVFormerEncoder when built
-        Returns:
-            dict with keys matching self.tasks
-        """
-        # Upgrade to geometrically-correct BEV when BEVFormerEncoder is available
+        """Stage 1 forward — perception only (no VLM)."""
         bev_features = self._run_bev_encoder(bev_features, img_feats, img_metas)
         bev_tokens = self._prepare_bev(bev_features)
         B = bev_tokens.shape[0]
@@ -542,28 +602,17 @@ class UnifiedPerceptionDecoder(BaseModule):
         vlm_tokens: Optional[torch.Tensor] = None,
         bev_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Stage 2 forward — optionally inject VLM tokens, then refine.
-
-        Args:
-            stage1_outputs: output dict from forward_stage1
-            bev_features:   same BEV features as stage 1
-            vlm_tokens:     (B, N_vlm, vlm_hidden_dim) or None
-            bev_mask:       optional BEV key-padding mask
-        Returns:
-            dict with refined query embeddings
-        """
+        """Stage 2 forward — optionally inject VLM tokens, then refine."""
         bev_tokens = self._prepare_bev(bev_features)
         all_q = stage1_outputs["all_queries"]  # (B, N_q, d)
         n_det = stage1_outputs["det"].shape[1]
         n_map = stage1_outputs["map"].shape[1]
 
         if vlm_tokens is not None:
-            # Lazily build projection for VLM hidden dim
             vlm_hidden = vlm_tokens.shape[-1]
             if self.vlm_proj is None or self.vlm_proj.in_features != vlm_hidden:
                 self.vlm_proj = nn.Linear(vlm_hidden, self.embed_dim).to(all_q.device)
             vlm_projected = self.vlm_proj(vlm_tokens)      # (B, N_vlm, d)
-            # Prepend VLM context tokens to the BEV memory
             bev_tokens = torch.cat([vlm_projected, bev_tokens], dim=1)
 
         for layer in self.stage2_layers:
@@ -580,21 +629,7 @@ class UnifiedPerceptionDecoder(BaseModule):
     # ------------------------------------------------------------------
 
     def predict(self, decoder_outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """Run task heads and return raw predictions.
-
-        Returns
-        -------
-        dict with any subset of:
-          det_cls   (B, N_det, num_det_cls)
-          det_bbox  (B, N_det, 10)
-          map_cls   (B, N_map, num_map_cls)
-          map_pts   (B, N_map, num_pts, 2)
-          ego_state (B, ego_status_dim)
-          motion_trajs  (B, N_det, K, T, 2)
-          motion_scores (B, N_det, K)
-          plan_trajs    (B, K, T, 2)
-          plan_scores   (B, K)
-        """
+        """Run task heads and return raw predictions."""
         preds: Dict[str, torch.Tensor] = {}
 
         if "det" in self.tasks:
@@ -641,29 +676,20 @@ class UnifiedPerceptionDecoder(BaseModule):
         ego_status=None,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
-        """Compute all enabled task losses.
-
-        Returns a flat loss dict (keys = loss names, values = scalar tensors).
-        """
         losses: Dict[str, torch.Tensor] = {}
 
-        # Detection loss
         if "det" in self.tasks and self.loss_cls is not None and gt_labels_3d is not None:
             losses.update(self._det_loss(preds, gt_bboxes_3d, gt_labels_3d))
 
-        # Map loss
         if "map" in self.tasks and self.loss_map_cls is not None and gt_map_labels is not None:
             losses.update(self._map_loss(preds, gt_map_labels, gt_map_pts))
 
-        # Ego-status loss
         if "ego" in self.tasks and self.loss_ego is not None and ego_status is not None:
             losses.update(self._ego_loss(preds, ego_status))
 
-        # Motion loss
         if "motion" in self.tasks and self.loss_motion is not None and gt_agent_fut_trajs is not None:
             losses.update(self._motion_loss(preds, gt_agent_fut_trajs, gt_agent_fut_masks))
 
-        # Planning loss
         if "planning" in self.tasks and self.loss_plan is not None and gt_ego_fut_trajs is not None:
             losses.update(self._plan_loss(preds, gt_ego_fut_trajs, gt_ego_fut_masks))
 
@@ -674,40 +700,31 @@ class UnifiedPerceptionDecoder(BaseModule):
     # ------------------------------------------------------------------
 
     def _det_loss(self, preds, gt_bboxes_3d, gt_labels_3d):
-        """Hungarian-matched detection loss (simplified)."""
-        det_cls = preds["det_cls"]   # (B, N, C)
-        det_reg = preds["det_bbox"]  # (B, N, 10)
+        det_cls = preds["det_cls"]
+        det_reg = preds["det_bbox"]
         B = det_cls.shape[0]
         losses = {}
-
         total_cls_loss = det_cls.new_zeros(())
-        total_reg_loss = det_reg.new_zeros(())
         count = 0
-
         for b in range(B):
-            labels = gt_labels_3d[b]  # (M,)
+            labels = gt_labels_3d[b]
             if labels is None or len(labels) == 0:
                 continue
             n_gt = len(labels)
-            # Use first n_gt queries as pseudo-matched (in full impl: Hungarian)
-            pred_logits = det_cls[b, :n_gt]   # (n_gt, C)
+            pred_logits = det_cls[b, :n_gt]
             total_cls_loss = total_cls_loss + F.cross_entropy(pred_logits, labels.long())
             count += 1
-
         if count > 0:
             losses["loss_det_cls"] = total_cls_loss / count
         else:
             losses["loss_det_cls"] = det_cls.sum() * 0.0
-
         return losses
 
     def _map_loss(self, preds, gt_map_labels, gt_map_pts):
-        map_cls = preds["map_cls"]   # (B, N, C)
-        map_pts = preds["map_pts"]   # (B, N, P, 2)
+        map_cls = preds["map_cls"]
         B = map_cls.shape[0]
         total_loss = map_cls.new_zeros(())
         count = 0
-
         for b in range(B):
             labels = gt_map_labels[b]
             if labels is None or len(labels) == 0:
@@ -716,11 +733,10 @@ class UnifiedPerceptionDecoder(BaseModule):
             pred_logits = map_cls[b, :n_gt]
             total_loss = total_loss + F.cross_entropy(pred_logits, labels.long())
             count += 1
-
         return {"loss_map_cls": total_loss / max(count, 1)}
 
     def _ego_loss(self, preds, ego_status):
-        ego_pred = preds["ego_state"]   # (B, ego_status_dim)
+        ego_pred = preds["ego_state"]
         if torch.is_tensor(ego_status):
             target = ego_status.float()
         else:
@@ -728,22 +744,20 @@ class UnifiedPerceptionDecoder(BaseModule):
         return {"loss_ego": F.mse_loss(ego_pred, target[..., : ego_pred.shape[-1]])}
 
     def _motion_loss(self, preds, gt_fut_trajs, gt_fut_masks):
-        trajs = preds["motion_trajs"]   # (B, N, K, T, 2)
-        scores = preds["motion_scores"] # (B, N, K)
+        trajs = preds["motion_trajs"]
         B, N, K, T, _ = trajs.shape
-        # Min-over-modes ADE
-        gt = gt_fut_trajs  # list[tensor(n_agent, T, 2)] or tensor(B, N, T, 2)
+        gt = gt_fut_trajs
         if isinstance(gt, (list, tuple)):
             total = trajs.new_zeros(())
             count = 0
             for b in range(B):
-                g = gt[b]  # (n_agent, T, 2)
+                g = gt[b]
                 if g is None or len(g) == 0:
                     continue
                 n_ag = min(g.shape[0], N)
-                pred_b = trajs[b, :n_ag]  # (n_ag, K, T, 2)
+                pred_b = trajs[b, :n_ag]
                 g_exp = g[:n_ag].unsqueeze(1).expand_as(pred_b).to(pred_b.device)
-                ade = (pred_b - g_exp).norm(dim=-1).mean(dim=-1)  # (n_ag, K)
+                ade = (pred_b - g_exp).norm(dim=-1).mean(dim=-1)
                 best_ade = ade.min(dim=-1).values.mean()
                 total = total + best_ade
                 count += 1
@@ -751,8 +765,8 @@ class UnifiedPerceptionDecoder(BaseModule):
         return {"loss_motion": trajs.sum() * 0.0}
 
     def _plan_loss(self, preds, gt_ego_fut_trajs, gt_ego_fut_masks):
-        trajs = preds["plan_trajs"]    # (B, K, T, 2)
-        scores = preds["plan_scores"]  # (B, K)
+        trajs = preds["plan_trajs"]
+        scores = preds["plan_scores"]
         B, K, T, _ = trajs.shape
 
         if isinstance(gt_ego_fut_trajs, (list, tuple)):
@@ -760,21 +774,21 @@ class UnifiedPerceptionDecoder(BaseModule):
                 g.to(trajs.device) if torch.is_tensor(g)
                 else trajs.new_zeros(T, 2)
                 for g in gt_ego_fut_trajs
-            ])  # (B, T, 2)
+            ])
         else:
             gt_stack = gt_ego_fut_trajs.to(trajs.device)
 
         gt_exp = gt_stack.unsqueeze(1).expand(B, K, T, 2)
-        ade = (trajs - gt_exp).norm(dim=-1)  # (B, K, T)
+        ade = (trajs - gt_exp).norm(dim=-1)
         if gt_ego_fut_masks is not None:
             if isinstance(gt_ego_fut_masks, (list, tuple)):
                 mask = torch.stack([
                     m.to(trajs.device) if torch.is_tensor(m)
                     else trajs.new_ones(T)
                     for m in gt_ego_fut_masks
-                ])  # (B, T)
+                ])
                 ade = ade * mask.unsqueeze(1)
-        min_ade = ade.mean(dim=-1).min(dim=-1).values  # (B,)
+        min_ade = ade.mean(dim=-1).min(dim=-1).values
         return {"loss_plan_ade": min_ade.mean()}
 
     # ------------------------------------------------------------------
@@ -787,25 +801,19 @@ class UnifiedPerceptionDecoder(BaseModule):
         img_metas: Optional[List[Dict]] = None,
         score_threshold: float = 0.3,
     ) -> List[Dict]:
-        """Convert raw predictions to nuScenes-format result dicts.
-
-        Returns a list of per-sample result dicts.
-        """
         B = next(iter(preds.values())).shape[0]
         results = []
         for b in range(B):
             sample = {}
 
-            # Detection
             if "det_cls" in preds:
-                cls_scores = preds["det_cls"][b].softmax(dim=-1)          # (N, C)
-                max_scores, max_labels = cls_scores[:, :-1].max(dim=-1)    # ignore background
+                cls_scores = preds["det_cls"][b].softmax(dim=-1)
+                max_scores, max_labels = cls_scores[:, :-1].max(dim=-1)
                 keep = max_scores > score_threshold
                 sample["boxes_3d"] = preds["det_bbox"][b][keep].detach().cpu()
                 sample["scores_3d"] = max_scores[keep].detach().cpu()
                 sample["labels_3d"] = max_labels[keep].detach().cpu()
 
-            # Map
             if "map_cls" in preds:
                 map_scores = preds["map_cls"][b].softmax(dim=-1)
                 max_s, max_l = map_scores.max(dim=-1)
@@ -814,16 +822,14 @@ class UnifiedPerceptionDecoder(BaseModule):
                 sample["map_labels"] = max_l[keep_map].detach().cpu()
                 sample["map_scores"] = max_s[keep_map].detach().cpu()
 
-            # Planning
             if "plan_trajs" in preds:
-                p_trajs  = preds["plan_trajs"][b].detach().cpu()   # (K, T, 2)
-                p_scores = preds["plan_scores"][b].detach().cpu()  # (K,)
+                p_trajs  = preds["plan_trajs"][b].detach().cpu()
+                p_scores = preds["plan_scores"][b].detach().cpu()
                 best_mode = p_scores.argmax()
-                sample["final_planning"] = p_trajs[best_mode]      # (T, 2)
+                sample["final_planning"] = p_trajs[best_mode]
                 sample["plan_trajs"] = p_trajs
                 sample["plan_scores"] = p_scores
 
-            # Motion
             if "motion_trajs" in preds:
                 sample["motion_trajs"]  = preds["motion_trajs"][b].detach().cpu()
                 sample["motion_scores"] = preds["motion_scores"][b].detach().cpu()
