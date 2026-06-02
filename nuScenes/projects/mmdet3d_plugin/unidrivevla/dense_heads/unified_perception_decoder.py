@@ -437,6 +437,8 @@ class UnifiedPerceptionDecoder(BaseModule):
         self.embed_dim = embed_dim
         self.bev_h = bev_h
         self.bev_w = bev_w
+        # export=True → ONNX-safe code paths; export=False → normal training
+        self.export = False
 
         # Try to build BEVFormerEncoder from mmdetection3d if the config is provided.
         self.bev_encoder = None
@@ -513,7 +515,12 @@ class UnifiedPerceptionDecoder(BaseModule):
         """
         if bev_features.dim() == 4:
             B, C, H, W = bev_features.shape
-            bev_features = bev_features.flatten(2).permute(0, 2, 1)  # (B, H*W, C)
+            # --- original (before export flag) ---
+            # bev_features = bev_features.flatten(2).permute(0, 2, 1)
+            if self.export:
+                bev_features = bev_features.view(B, C, int(H) * int(W)).permute(0, 2, 1)
+            else:
+                bev_features = bev_features.flatten(2).permute(0, 2, 1)  # (B, H*W, C)
         bev_tokens = self.bev_proj(bev_features)
         bev_tokens = self.bev_pos_enc(bev_tokens)
         return bev_tokens
@@ -576,7 +583,12 @@ class UnifiedPerceptionDecoder(BaseModule):
         img_metas: Optional[list] = None,
     ) -> Dict[str, torch.Tensor]:
         """Stage 1 forward — perception only (no VLM)."""
-        bev_features = self._run_bev_encoder(bev_features, img_feats, img_metas)
+        # --- original (before export flag) ---
+        # bev_features = self._run_bev_encoder(bev_features, img_feats, img_metas)
+        if self.export:
+            pass  # skip BEV encoder — not available during ONNX export
+        else:
+            bev_features = self._run_bev_encoder(bev_features, img_feats, img_metas)
         bev_tokens = self._prepare_bev(bev_features)
         B = bev_tokens.shape[0]
         det_q, map_q, ego_q = self._get_queries(B)
@@ -609,10 +621,21 @@ class UnifiedPerceptionDecoder(BaseModule):
         n_map = stage1_outputs["map"].shape[1]
 
         if vlm_tokens is not None:
-            vlm_hidden = vlm_tokens.shape[-1]
-            if self.vlm_proj is None or self.vlm_proj.in_features != vlm_hidden:
-                self.vlm_proj = nn.Linear(vlm_hidden, self.embed_dim).to(all_q.device)
-            vlm_projected = self.vlm_proj(vlm_tokens)      # (B, N_vlm, d)
+            # --- original (before export flag) ---
+            # vlm_hidden = vlm_tokens.shape[-1]
+            # if self.vlm_proj is None or self.vlm_proj.in_features != vlm_hidden:
+            #     self.vlm_proj = nn.Linear(vlm_hidden, self.embed_dim).to(all_q.device)
+            # vlm_projected = self.vlm_proj(vlm_tokens)
+            if self.export:
+                if self.vlm_proj is not None:
+                    vlm_projected = self.vlm_proj(vlm_tokens)
+                else:
+                    vlm_projected = vlm_tokens
+            else:
+                vlm_hidden = vlm_tokens.shape[-1]
+                if self.vlm_proj is None or self.vlm_proj.in_features != vlm_hidden:
+                    self.vlm_proj = nn.Linear(vlm_hidden, self.embed_dim).to(all_q.device)
+                vlm_projected = self.vlm_proj(vlm_tokens)
             bev_tokens = torch.cat([vlm_projected, bev_tokens], dim=1)
 
         for layer in self.stage2_layers:

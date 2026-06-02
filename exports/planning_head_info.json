@@ -50,13 +50,13 @@
     "lateral_Conv2d_2048x256x1x1": {
       "min": -0.0221,
       "max": 0.0221,
-      "mean": -0.0,
+      "mean": 0.0,
       "std": 0.0128
     },
     "output_Conv2d_256x256x3x3": {
       "min": -0.0208,
       "max": 0.0208,
-      "mean": 0.0,
+      "mean": -0.0,
       "std": 0.012
     }
   },

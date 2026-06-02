@@ -48,6 +48,8 @@ class UniDriveVLA(BaseDetector):
         self.use_grid_mask = use_grid_mask
         self.video_test_mode = video_test_mode
         self.instance_bank = None  # maintained inside heads (SparseDrive convention)
+        # export=True → ONNX-safe code paths; export=False → normal training
+        self.export = False
 
     # ------------------------------------------------------------------
     # Properties
@@ -75,12 +77,26 @@ class UniDriveVLA(BaseDetector):
         # Handle multi-camera input: (B, N_cam, C, H, W)
         if img.dim() == 5:
             B, N, C, H, W = img.shape
-            img = img.reshape(B * N, C, H, W)
+            # --- original (before export flag) ---
+            # img = img.reshape(B * N, C, H, W)
+            if self.export:
+                img = img.view(B * N, C, H, W)
+            else:
+                img = img.reshape(B * N, C, H, W)
+
             feats = self.img_backbone(img)
             if self.img_neck is not None:
                 feats = self.img_neck(feats)
-            # Reshape back to (B, N_cam, ...)
-            feats = [f.reshape(B, N, *f.shape[1:]) for f in feats]
+
+            # --- original (before export flag) ---
+            # feats = [f.reshape(B, N, *f.shape[1:]) for f in feats]
+            if self.export:
+                feats = [
+                    f.view(B, N, f.shape[1], int(f.shape[2]), int(f.shape[3]))
+                    for f in feats
+                ]
+            else:
+                feats = [f.reshape(B, N, *f.shape[1:]) for f in feats]
         else:
             feats = self.img_backbone(img)
             if self.img_neck is not None:

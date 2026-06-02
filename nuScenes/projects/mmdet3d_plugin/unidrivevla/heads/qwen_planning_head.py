@@ -107,6 +107,10 @@ class QwenVL3APlanningHead(BaseModule):
         # Actual hidden dim depends on vlm_variant; set in _load_vlm()
         self.action_head: Optional[nn.Linear] = None
 
+        # export=True → ONNX-safe code paths (skip VLM, use stub);
+        # export=False → normal training with full Qwen3-VL
+        self.export = False
+
     # ------------------------------------------------------------------
     # Lazy VLM loading (avoids ~5 GB VRAM usage at import time)
     # ------------------------------------------------------------------
@@ -214,7 +218,12 @@ class QwenVL3APlanningHead(BaseModule):
         B, N, C, H, W = feat.shape
         feat = feat.mean(dim=1)  # average over cameras → (B, C, H, W)
         feat = F.adaptive_avg_pool2d(feat, (self._bev_h, self._bev_w))  # (B, C, bev_h, bev_w)
-        return feat.flatten(2).permute(0, 2, 1)  # (B, bev_h*bev_w, C)
+        # --- original (before export flag) ---
+        # return feat.flatten(2).permute(0, 2, 1)
+        if self.export:
+            return feat.view(B, C, self._bev_h * self._bev_w).permute(0, 2, 1)
+        else:
+            return feat.flatten(2).permute(0, 2, 1)  # (B, bev_h*bev_w, C)
 
     # ------------------------------------------------------------------
     # Train / Test
@@ -235,15 +244,27 @@ class QwenVL3APlanningHead(BaseModule):
             bev_features = self._feats_to_bev(img_feats)
 
         if self.perception_decoder is not None and bev_features is not None:
-            # Pass img_feats + img_metas so the decoder can use BEVFormerEncoder if built
-            s1_out = self.perception_decoder.forward_stage1(
-                bev_features, img_feats=img_feats, img_metas=img_metas
-            )
-            if img is not None:
-                vlm_tokens = self._extract_vlm_tokens(img)
-                s2_out = self.perception_decoder.forward_stage2(s1_out, bev_features, vlm_tokens)
-            else:
+            # --- original (before export flag) ---
+            # s1_out = self.perception_decoder.forward_stage1(
+            #     bev_features, img_feats=img_feats, img_metas=img_metas
+            # )
+            # if img is not None:
+            #     vlm_tokens = self._extract_vlm_tokens(img)
+            #     s2_out = self.perception_decoder.forward_stage2(s1_out, bev_features, vlm_tokens)
+            # else:
+            #     s2_out = s1_out
+            if self.export:
+                s1_out = self.perception_decoder.forward_stage1(bev_features)
                 s2_out = s1_out
+            else:
+                s1_out = self.perception_decoder.forward_stage1(
+                    bev_features, img_feats=img_feats, img_metas=img_metas
+                )
+                if img is not None:
+                    vlm_tokens = self._extract_vlm_tokens(img)
+                    s2_out = self.perception_decoder.forward_stage2(s1_out, bev_features, vlm_tokens)
+                else:
+                    s2_out = s1_out
             preds = self.perception_decoder.predict(s2_out)
             det_losses = self.perception_decoder.loss(preds, **kwargs)
             losses.update(det_losses)
@@ -261,14 +282,28 @@ class QwenVL3APlanningHead(BaseModule):
 
         with torch.no_grad():
             if bev_features is not None:
-                s1_out = self.perception_decoder.forward_stage1(
-                    bev_features, img_feats=img_feats, img_metas=img_metas
-                )
-                if img is not None:
-                    self._load_vlm()
-                    vlm_tokens = self._extract_vlm_tokens(img)
-                    s2_out = self.perception_decoder.forward_stage2(s1_out, bev_features, vlm_tokens)
-                else:
+                # --- original (before export flag) ---
+                # s1_out = self.perception_decoder.forward_stage1(
+                #     bev_features, img_feats=img_feats, img_metas=img_metas
+                # )
+                # if img is not None:
+                #     self._load_vlm()
+                #     vlm_tokens = self._extract_vlm_tokens(img)
+                #     s2_out = self.perception_decoder.forward_stage2(...)
+                # else:
+                #     s2_out = s1_out
+                if self.export:
+                    s1_out = self.perception_decoder.forward_stage1(bev_features)
                     s2_out = s1_out
+                else:
+                    s1_out = self.perception_decoder.forward_stage1(
+                        bev_features, img_feats=img_feats, img_metas=img_metas
+                    )
+                    if img is not None:
+                        self._load_vlm()
+                        vlm_tokens = self._extract_vlm_tokens(img)
+                        s2_out = self.perception_decoder.forward_stage2(s1_out, bev_features, vlm_tokens)
+                    else:
+                        s2_out = s1_out
                 return self.perception_decoder.predict(s2_out)
             return {}

@@ -215,10 +215,13 @@ class PlanningHeadExportWrapper(nn.Module):
     vlm_plan    (B,   6,   2)     direct VLM action head waypoints
     """
 
-    def __init__(self, bev_h: int = 50, bev_w: int = 50):
+    def __init__(self, bev_h: int = 50, bev_w: int = 50, export: bool = False):
         super().__init__()
         self.bev_h = bev_h
         self.bev_w = bev_w
+        # export=True  → ONNX-safe code paths (set before torch.onnx.export)
+        # export=False → normal PyTorch training/inference paths
+        self.export = export
 
         # ── img_backbone: ResNet-50 ────────────────────────────────────────
         self.backbone = ResNet50Backbone()
@@ -247,7 +250,12 @@ class PlanningHeadExportWrapper(nn.Module):
         B, N, C, H, W = img.shape
 
         # ── 1. Backbone: ResNet-50 ─────────────────────────────────────────
-        c5 = self.backbone(img.reshape(B * N, C, H, W))
+        # --- original (before export flag) ---
+        # c5 = self.backbone(img.reshape(B * N, C, H, W))
+        if self.export:
+            c5 = self.backbone(img.view(B * N, C, H, W))
+        else:
+            c5 = self.backbone(img.reshape(B * N, C, H, W))
         # c5: (B*N, 2048, H/32, W/32)
 
         # ── 2. Neck: FPN 2048 → 256 ───────────────────────────────────────
@@ -255,10 +263,22 @@ class PlanningHeadExportWrapper(nn.Module):
         # fpn: (B*N, 256, H/32, W/32)
 
         # ── 3. BEV construction: camera avg + pool to 50×50 ───────────────
-        fpn = fpn.reshape(B, N, 256, fpn.shape[2], fpn.shape[3])
+        # --- original (before export flag) ---
+        # fpn = fpn.reshape(B, N, 256, fpn.shape[2], fpn.shape[3])
+        if self.export:
+            fpn_h = int(fpn.shape[2])
+            fpn_w = int(fpn.shape[3])
+            fpn = fpn.view(B, N, 256, fpn_h, fpn_w)
+        else:
+            fpn = fpn.reshape(B, N, 256, fpn.shape[2], fpn.shape[3])
         bev_map = fpn.mean(dim=1)                              # (B, 256, H', W')
         bev_map = F.adaptive_avg_pool2d(bev_map, (self.bev_h, self.bev_w))
-        bev_tokens = bev_map.flatten(2).permute(0, 2, 1)      # (B, 2500, 256)
+        # --- original (before export flag) ---
+        # bev_tokens = bev_map.flatten(2).permute(0, 2, 1)
+        if self.export:
+            bev_tokens = bev_map.view(B, 256, self.bev_h * self.bev_w).permute(0, 2, 1)
+        else:
+            bev_tokens = bev_map.flatten(2).permute(0, 2, 1)  # (B, 2500, 256)
 
         # ── 4. Stage 1: UnifiedPerceptionDecoder ──────────────────────────
         s1_out = self.decoder.forward_stage1(bev_tokens)
@@ -408,9 +428,9 @@ def main():
     print(f"  VLM: Qwen3-VL-2B stub (hidden_dim=2048, random weights)")
     print(f"  vlm_fusion_cfg: type='direct'  |  action_dim=2  action_horizon=6")
 
-    # ── [1/4] Build model ────────────────────────────────────────────────────
-    print("\n[1/4] Building PlanningHeadExportWrapper ...")
-    model = PlanningHeadExportWrapper(bev_h=args.bev_h, bev_w=args.bev_w).eval()
+    # ── [1/5] Build model (export=False — normal PyTorch path) ─────────────
+    print("\n[1/5] Building PlanningHeadExportWrapper (export=False) ...")
+    model = PlanningHeadExportWrapper(bev_h=args.bev_h, bev_w=args.bev_w, export=False).eval()
 
     n_backbone  = sum(p.numel() for p in model.backbone.parameters())  / 1e6
     n_neck      = sum(p.numel() for p in model.neck.parameters())      / 1e6
@@ -443,23 +463,22 @@ def main():
           f"min={out_w.min():.4f}  max={out_w.max():.4f}  "
           f"mean={out_w.mean():.4f}  std={out_w.std():.4f}")
 
-    # ── [2/4] Reference forward pass ─────────────────────────────────────────
-    print(f"\n[2/4] Reference forward pass ...")
-    # Camera image input — the REAL pipeline input
+    # ── [2/5] PyTorch reference forward (export=False) ───────────────────────
+    print(f"\n[2/5] PyTorch reference forward (export=False) ...")
     dummy = torch.zeros(1, args.num_cams, 3, args.img_h, args.img_w)
     print(f"  Input  : img  shape={list(dummy.shape)}"
           f"  (1 batch, {args.num_cams} cams, 3ch, {args.img_h}x{args.img_w})")
+    print(f"  model.export = {model.export}")
 
     t0 = time.time()
     with torch.no_grad():
-        ref = model(dummy)
+        pytorch_ref = model(dummy)
     print(f"  Forward pass: {time.time()-t0:.1f}s")
 
     # Show intermediate shapes
     with torch.no_grad():
-        # Run backbone only to show C5 shape
-        c5_sample = model.backbone(dummy[0])  # (N, 2048, H/32, W/32)
-        fpn_sample = model.neck(c5_sample)    # (N, 256, H/32, W/32)
+        c5_sample = model.backbone(dummy[0])
+        fpn_sample = model.neck(c5_sample)
     print(f"\n  Intermediate shapes:")
     print(f"    After backbone (C5)  : {list(c5_sample.shape)}  "
           f"[N_cam, 2048, {args.img_h//32}, {args.img_w//32}]")
@@ -468,32 +487,38 @@ def main():
     print(f"    After BEV avg+pool   : [1, {args.bev_h*args.bev_w}, 256]  "
           f"[batch, {args.bev_h}x{args.bev_w} BEV, embed_dim]")
 
-    print(f"\n  Output shapes:")
-    for name, out in zip(OUT_NAMES, ref):
+    print(f"\n  PyTorch output shapes (export=False):")
+    for name, out in zip(OUT_NAMES, pytorch_ref):
         print(f"    {name:<14}: {list(out.shape)}")
 
-    # ── [3/4] ONNX export ────────────────────────────────────────────────────
-    print("\n[3/4] ONNX export ...")
+    # ── [3/5] Switch to export=True and ONNX export ─────────────────────────
+    print(f"\n[3/5] ONNX export (export=True) ...")
+    model.export = True
+    model.decoder.export = True
+    print(f"  model.export = {model.export}")
+    print(f"  model.decoder.export = {model.decoder.export}")
+
     onnx_path = args.output_dir / "planning_head.onnx"
     onnx_mb   = export_onnx(model, dummy, onnx_path)
-    print("  Verifying ONNX outputs vs PyTorch reference ...")
-    verify_onnx(onnx_path, dummy, ref)
     analyze_onnx_ops(onnx_path)
 
-    # Count Conv ops in ONNX graph to confirm neck is present
-    try:
-        import onnx as _onnx
-        graph = _onnx.load(str(onnx_path))
-        conv_count = sum(1 for n in graph.graph.node if n.op_type == "Conv")
-        print(f"  ONNX graph: {len(graph.graph.node)} nodes, {conv_count} Conv ops "
-              f"(backbone+neck Conv layers confirmed)")
-    except ImportError:
-        pass
+    # ── [4/5] Compare PyTorch (export=False) vs ONNX Runtime ─────────────────
+    print(f"\n[4/5] Comparing PyTorch (export=False) vs ONNX Runtime ...")
+    print("  This is the key comparison: same weights, two code paths.")
+    verify_onnx(onnx_path, dummy, pytorch_ref)
 
-    # ── [4/4] TorchScript export ─────────────────────────────────────────────
-    print("\n[4/4] TorchScript export ...")
+    # ── [5/5] TorchScript export ─────────────────────────────────────────────
+    print("\n[5/5] TorchScript export ...")
     ts_path = args.output_dir / "planning_head.pt"
     ts_mb   = export_torchscript(model, dummy, ts_path)
+    print("  Comparing PyTorch (export=False) vs TorchScript ...")
+    with torch.no_grad():
+        ts_model = torch.jit.load(str(ts_path), map_location="cpu")
+        ts_outs = ts_model(dummy)
+    for name, pt_out, ts_out in zip(OUT_NAMES, pytorch_ref, ts_outs):
+        diff = abs(pt_out.numpy() - ts_out.numpy()).max()
+        sym = "OK" if diff < 1e-4 else "DIFF"
+        print(f"  [{sym}]  {name:<14}  max_diff={diff:.2e}")
 
     # ── Metadata JSON ─────────────────────────────────────────────────────────
     info = {
@@ -538,7 +563,7 @@ def main():
                 "std":  round(float(out_w.std()),  4),
             },
         },
-        "outputs": {n: {"shape": list(r.shape)} for n, r in zip(OUT_NAMES, ref)},
+        "outputs": {n: {"shape": list(r.shape)} for n, r in zip(OUT_NAMES, pytorch_ref)},
         "parameters_M": {
             "total":     round(n_total,    1),
             "backbone":  round(n_backbone, 1),
@@ -560,8 +585,13 @@ def main():
     print(f"  {ts_path}  ({ts_mb:.1f} MB)")
     print(f"  {info_path}")
     print("=" * 62)
-    print("\n  ONNX input  : 'img'  shape=(batch, N_cam, 3, H, W)")
-    print("  Conv ops in ONNX graph confirm backbone + neck are exported.")
+    print("\n  Workflow used:")
+    print("    1. Built model with export=False (normal PyTorch path)")
+    print("    2. Ran PyTorch forward → saved reference outputs")
+    print("    3. Set export=True → ONNX export (ONNX-safe code path)")
+    print("    4. Compared PyTorch (export=False) vs ONNX Runtime")
+    print("    5. TorchScript export + comparison")
+    print("\n  Same weights, two code paths → outputs must match.")
 
 
 if __name__ == "__main__":
